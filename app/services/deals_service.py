@@ -403,11 +403,12 @@ def format_deals_for_prompt(deals: list[dict]) -> str:
                 expire_str = ""
         else:
             expire_str = ""
+        expire_suffix = f" | ⏰ {expire_str}" if expire_str else ""
         lines.append(
             f"🏷️ {d['title']} — {d['business_name']}\n"
             f"   📝 {d['description']}\n"
             f"   📍 {d.get('city', '')}, {d.get('state', '')}"
-            f"{f' | ⏰ {expire_str}' if expire_str else ''}"
+            f"{expire_suffix}"
         )
     return "\n".join(lines)
 
@@ -433,12 +434,13 @@ def format_deals_for_whatsapp(deals: list[dict]) -> str:
                     expire_str = f"⏰ {days_left} days left"
             except Exception:
                 pass
+        expire_line = f"\n   {expire_str}" if expire_str else ""
         lines.append(
             f"*{i}. {d['title']}*\n"
             f"   🏪 {d['business_name']}\n"
             f"   📝 {d['description']}\n"
             f"   📍 {d.get('city', '')}, {d.get('state', '')}"
-            f"{f'\n   {expire_str}' if expire_str else ''}\n"
+            f"{expire_line}\n"
         )
     lines.append("Want to post your own deal? Say *'post a deal'*!")
     return "\n".join(lines)
