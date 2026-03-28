@@ -1,0 +1,18 @@
+[Unit]
+Description=Hello Desi WhatsApp Bot (FastAPI + Uvicorn)
+After=network.target
+
+[Service]
+User=hellodesi
+Group=www-data
+WorkingDirectory=/opt/hello-desi
+Environment="PATH=/opt/hello-desi/venv/bin"
+EnvironmentFile=/opt/hello-desi/.env
+ExecStart=/opt/hello-desi/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

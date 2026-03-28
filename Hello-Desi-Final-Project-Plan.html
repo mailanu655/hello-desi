@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hello Desi - Final Project Plan</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #FF6B35 0%, #1B4332 100%);
+            color: white;
+            padding: 40px 20px;
+            text-align: center;
+            border-bottom: 4px solid #FF6B35;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 8px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        header .emoji {
+            font-size: 1.2em;
+            margin-right: 10px;
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.95;
+            font-style: italic;
+        }
+
+        .tabs-container {
+            display: flex;
+            border-bottom: 2px solid #f0f0f0;
+            overflow-x: auto;
+            background: #f9f9f9;
+        }
+
+        .tab-button {
+            padding: 16px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 0.95em;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s ease;
+            border-bottom: 3px solid transparent;
+            white-space: nowrap;
+            position: relative;
+        }
+
+        .tab-button:hover {
+            color: #FF6B35;
+            background: #f0f0f0;
+        }
+
+        .tab-button.active {
+            color: #FF6B35;
+            border-bottom-color: #FF6B35;
+            background: white;
+        }
+
+        .content {
+            display: none;
+            padding: 40px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        h2 {
+            color: #1B4332;
+            margin-bottom: 24px;
+            font-size: 1.8em;
+            border-left: 4px solid #FF6B35;
+            padding-left: 16px;
+        }
+
+        h3 {
+            color: #FF6B35;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            font-size: 1.2em;
+        }
+
+        p {
+            color: #444;
+            line-height: 1.8;
+            margin-bottom: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th {
+            background: linear-gradient(135deg, #FF6B35 0%, #1B4332 100%);
+            color: white;
+            padding: 16px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #eee;
+            color: #555;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+            margin: 24px 0;
+        }
+
+        .feature-card {
+            background: linear-gradient(135deg, #fff9f0 0%, #f5f5f5 100%);
+            border-left: 4px solid #FF6B35;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        }
+
+        .feature-card h4 {
+            color: #1B4332;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+
+        .feature-card p {
+            color: #666;
+            font-size: 0.95em;
+            margin-bottom: 0;
+        }
+
+        .phase-box {
+            background: linear-gradient(135deg, #fff9f0 0%, #ffffff 100%);
+            border-left: 4px solid #1B4332;
+            padding: 20px;
+            margin: 16px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .phase-box h4 {
+            color: #FF6B35;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .cost-table {
+            margin: 24px 0;
+        }
+
+        .risk-item {
+            background: #fff9f0;
+            border-left: 4px solid #FF6B35;
+            padding: 16px;
+            margin: 12px 0;
+            border-radius: 6px;
+        }
+
+        .risk-item.high {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .risk-item.medium {
+            border-left-color: #ffc107;
+            background: #fffbf0;
+        }
+
+        .risk-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .risk-badge.high {
+            background: #dc3545;
+            color: white;
+        }
+
+        .risk-badge.medium {
+            background: #ffc107;
+            color: #333;
+        }
+
+        .highlight {
+            background: #fff9e6;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #FF6B35;
+            margin: 20px 0;
+        }
+
+        .highlight strong {
+            color: #1B4332;
+        }
+
+        ul, ol {
+            margin: 16px 0 16px 24px;
+            color: #555;
+            line-height: 1.8;
+        }
+
+        li {
+            margin-bottom: 10px;
+        }
+
+        .stat-box {
+            background: linear-gradient(135deg, #FF6B35 0%, #ff8a5b 100%);
+            color: white;
+            padding: 24px;
+            border-radius: 8px;
+            margin: 16px 0;
+            text-align: center;
+        }
+
+        .stat-box .number {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .stat-box .label {
+            font-size: 0.95em;
+            opacity: 0.95;
+        }
+
+        .revenue-projection {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .revenue-card {
+            background: linear-gradient(135deg, #1B4332 0%, #2d6a4f 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .revenue-card .period {
+            font-size: 0.9em;
+            opacity: 0.8;
+            margin-bottom: 8px;
+        }
+
+        .revenue-card .amount {
+            font-size: 1.8em;
+            font-weight: 700;
+        }
+
+        .tech-cost {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .tech-item {
+            background: #f9f9f9;
+            padding: 16px;
+            border-radius: 8px;
+            border-left: 3px solid #FF6B35;
+        }
+
+        .tech-item .name {
+            font-weight: 600;
+            color: #1B4332;
+            margin-bottom: 6px;
+        }
+
+        .tech-item .cost {
+            color: #FF6B35;
+            font-weight: 600;
+        }
+
+        .tech-item .description {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 6px;
+        }
+
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 1.8em;
+            }
+
+            .content {
+                padding: 24px;
+            }
+
+            h2 {
+                font-size: 1.4em;
+            }
+
+            .tabs-container {
+                flex-wrap: wrap;
+            }
+
+            .tab-button {
+                padding: 12px 16px;
+                font-size: 0.85em;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+
+            table {
+                font-size: 0.9em;
+            }
+
+            th, td {
+                padding: 12px;
+            }
+        }
+
+        footer {
+            background: #f9f9f9;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #eee;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><span class="emoji">🙏</span>Hello Desi</h1>
+            <p>Your AI Desi Friend in America</p>
+        </header>
+
+        <div class="tabs-container">
+            <button class="tab-button active" onclick="showTab(0)">Overview</button>
+            <button class="tab-button" onclick="showTab(1)">Tech Stack</button>
+            <button class="tab-button" onclick="showTab(2)">Data Pipeline</button>
+            <button class="tab-button" onclick="showTab(3)">Features</button>
+            <button class="tab-button" onclick="showTab(4)">Roadmap</button>
+            <button class="tab-button" onclick="showTab(5)">Costs</button>
+            <button class="tab-button" onclick="showTab(6)">Monetization</button>
+            <button class="tab-button" onclick="showTab(7)">Risks</button>
+        </div>
+
+        <!-- TAB 1: Overview -->
+        <div class="content active">
+            <h2>Project Overview</h2>
+
+            <p><strong>Project Name:</strong> Hello Desi</p>
+            <p><strong>Owner:</strong> Anu</p>
+            <p><strong>Tagline:</strong> Your AI Desi Friend in America</p>
+
+            <div class="highlight">
+                <strong>What is Hello Desi?</strong>
+                <p>Hello Desi is an AI-powered WhatsApp agent designed specifically for the Indian diaspora in the USA. Using the WhatsApp Cloud API (direct from Meta), it provides conversational AI assistance across multilingual interfaces (English, Hindi, Hinglish) to help Indian immigrants navigate community resources, services, immigration processes, and financial matters.</p>
+            </div>
+
+            <h3>Key Features</h3>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>Conversational AI</h4>
+                    <p>Natural language understanding powered by Claude API with context awareness and personalized responses.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Multilingual Support</h4>
+                    <p>Seamless communication in English, Hindi, and Hinglish to serve diverse diaspora communities.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>5 Service Modules</h4>
+                    <p>Community hub, services directory, immigration help, financial services, and classifieds.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>Real-Time Data</h4>
+                    <p>Live integration with community events, business listings, and professional networks.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>WhatsApp Native</h4>
+                    <p>Accessible through WhatsApp - the primary communication platform for Indian diaspora.</p>
+                </div>
+                <div class="feature-card">
+                    <h4>RAG Architecture</h4>
+                    <p>Retrieval-Augmented Generation ensures accurate, sourced information for sensitive topics.</p>
+                </div>
+            </div>
+
+            <h3>Target Market</h3>
+            <ul>
+                <li><strong>Primary:</strong> Indian diaspora in the USA (4+ million)</li>
+                <li><strong>Secondary:</strong> Indian immigrants in other English-speaking countries (UK, Canada, Australia)</li>
+                <li><strong>Segments:</strong> H-1B professionals, new immigrants, students, NRI community</li>
+            </ul>
+
+            <h3>Problem Statement</h3>
+            <p>Indian immigrants in the USA face information fragmentation across multiple platforms (Facebook groups, Reddit, Nextdoor, Google searches). There's no centralized AI assistant that understands cultural context, multilingual needs, and specific immigration/diaspora challenges. This creates:</p>
+            <ul>
+                <li>Information gaps and misinformation</li>
+                <li>Lost community connection</li>
+                <li>Inefficient service discovery</li>
+                <li>Lack of trusted guidance on legal/financial matters</li>
+            </ul>
+
+            <h3>Solution Approach</h3>
+            <p>A WhatsApp-native AI agent that aggregates community data, professional networks, and authoritative sources, providing personalized, context-aware assistance through conversational interface.</p>
+        </div>
+
+        <!-- TAB 2: Tech Stack -->
+        <div class="content">
+            <h2>Technology Stack</h2>
+
+            <p>Hello Desi is built on a modern, scalable architecture optimized for cost and performance.</p>
+
+            <table>
+                <tr>
+                    <th>Layer</th>
+                    <th>Technology</th>
+                    <th>Cost/Pricing</th>
+                    <th>Rationale</th>
+                </tr>
+                <tr>
+                    <td><strong>Messaging</strong></td>
+                    <td>WhatsApp Cloud API (Meta Direct)</td>
+                    <td>$0.005-0.06/conversation</td>
+                    <td>Official API, most reliable, native WhatsApp experience, volume discounts available</td>
+                </tr>
+                <tr>
+                    <td><strong>Backend</strong></td>
+                    <td>FastAPI (Python)</td>
+                    <td>Free/Open Source</td>
+                    <td>High performance, async support, excellent for AI/LLM integration, fast development</td>
+                </tr>
+                <tr>
+                    <td><strong>Hosting</strong></td>
+                    <td>Railway.app</td>
+                    <td>$20/month (MVP)</td>
+                    <td>Simple deployment, generous free tier, good for startups, auto-scaling</td>
+                </tr>
+                <tr>
+                    <td><strong>AI/LLM</strong></td>
+                    <td>Claude API (Haiku 90% + Sonnet 10%)</td>
+                    <td>$50-80/month (MVP)</td>
+                    <td>Best reasoning + speed ratio, strong multilingual support, lower latency than competitors</td>
+                </tr>
+                <tr>
+                    <td><strong>Database</strong></td>
+                    <td>Supabase (PostgreSQL + pgvector)</td>
+                    <td>Free tier (generous)</td>
+                    <td>Managed PostgreSQL, vector embeddings for RAG, real-time capabilities</td>
+                </tr>
+                <tr>
+                    <td><strong>Caching</strong></td>
+                    <td>Redis (Upstash)</td>
+                    <td>Free tier</td>
+                    <td>Fast session/cache management, serverless Redis</td>
+                </tr>
+                <tr>
+                    <td><strong>RAG Engine</strong></td>
+                    <td>Firecrawl AI → pgvector</td>
+                    <td>$16/month</td>
+                    <td>Intelligent web scraping, structured data extraction, vector embeddings</td>
+                </tr>
+                <tr>
+                    <td><strong>Monitoring</strong></td>
+                    <td>Sentry + Railway Logs</td>
+                    <td>Free tier</td>
+                    <td>Error tracking, performance monitoring</td>
+                </tr>
+            </table>
+
+            <h3>Architecture Diagram</h3>
+            <div class="highlight">
+                <pre style="color: #666; overflow-x: auto; font-size: 0.9em;">
+User (WhatsApp)
+    ↓
+WhatsApp Cloud API
+    ↓
+Railway (FastAPI Backend)
+    ├→ Session Manager (Redis/Upstash)
+    ├→ Database (Supabase PostgreSQL)
+    │   └→ pgvector (embeddings)
+    ├→ LLM Router (Claude API)
+    │   ├→ Haiku (fast queries)
+    │   └→ Sonnet (complex reasoning)
+    └→ RAG Pipeline
+        ├→ Firecrawl (web scraping)
+        ├→ Vector Store (pgvector)
+        └→ External APIs (Places, Apify, etc.)
+                </pre>
+            </div>
+
+            <h3>Why This Stack?</h3>
+            <ul>
+                <li><strong>Cost Efficiency:</strong> ~$170/mo core infrastructure vs. $500+ for competitors</li>
+                <li><strong>Scalability:</strong> PostgreSQL + Redis handle 100k+ users with same infrastructure</li>
+                <li><strong>AI Native:</strong> FastAPI + pgvector is purpose-built for LLM applications</li>
+                <li><strong>Reliability:</strong> Managed services reduce ops burden during startup phase</li>
+                <li><strong>Multilingual:</strong> Claude's multilingual capabilities exceed other LLMs for Indian languages</li>
+            </ul>
+        </div>
+
+        <!-- TAB 3: Data Pipeline -->
+        <div class="content">
+            <h2>Data Pipeline & Integrations</h2>
+
+            <p>Hello Desi aggregates data from 6+ sources to provide comprehensive, real-time information to users.</p>
+
+            <table>
+                <tr>
+                    <th>Data Source</th>
+                    <th>Tool</th>
+                    <th>Cost</th>
+                    <th>Data Type</th>
+                    <th>Update Frequency</th>
+                </tr>
+                <tr>
+                    <td>Business Listings</td>
+                    <td>Google Places API</td>
+                    <td>$25/month</td>
+                    <td>Restaurants, doctors, lawyers, groceries</td>
+                    <td>Real-time</td>
+                </tr>
+                <tr>
+                    <td>Community Posts</td>
+                    <td>Apify FB Groups Scraper</td>
+                    <td>$0-29/month</td>
+                    <td>Events, discussions from Indian FB groups</td>
+                    <td>Daily</td>
+                </tr>
+                <tr>
+                    <td>Classifieds</td>
+                    <td>Zerowork</td>
+                    <td>$15/month</td>
+                    <td>Roommates, furniture from Eknazar, Deshvidesh</td>
+                    <td>Daily</td>
+                </tr>
+                <tr>
+                    <td>Professionals</td>
+                    <td>Hexofy</td>
+                    <td>$12/month</td>
+                    <td>Curated professionals from Sulekha</td>
+                    <td>Weekly</td>
+                </tr>
+                <tr>
+                    <td>Workflow Orchestration</td>
+                    <td>Activepieces (self-hosted)</td>
+                    <td>Free</td>
+                    <td>Automation between tools</td>
+                    <td>N/A</td>
+                </tr>
+                <tr>
+                    <td>RAG Content</td>
+                    <td>Firecrawl AI</td>
+                    <td>$16/month</td>
+                    <td>Scraped community blogs, guides, forums</td>
+                    <td>Weekly</td>
+                </tr>
+            </table>
+
+            <div class="stat-box">
+                <div class="number">$68-97</div>
+                <div class="label">Monthly Data Pipeline Cost</div>
+            </div>
+
+            <h3>Data Flow Architecture</h3>
+            <div class="highlight">
+                <pre style="color: #666; overflow-x: auto; font-size: 0.9em;">
+Data Sources (6 platforms)
+    ↓
+Activepieces (Free Orchestration)
+    ├→ Google Places API
+    ├→ Apify Scraper
+    ├→ Zerowork
+    ├→ Hexofy
+    └→ Firecrawl
+    ↓
+Data Processing Layer
+    ├→ Normalization
+    ├→ Deduplication
+    ├→ Quality Checks
+    └→ Entity Extraction
+    ↓
+Vector Embeddings (Firecrawl AI)
+    ↓
+Supabase PostgreSQL + pgvector
+    ├→ Relational Tables
+    └→ Vector Index
+    ↓
+Claude LLM (RAG Queries)
+    ↓
+User (WhatsApp)
+                </pre>
+            </div>
+
+            <h3>Key Data Integrations</h3>
+            <ul>
+                <li><strong>Google Places API:</strong> 5 million+ Indian-owned businesses in USA indexed</li>
+                <li><strong>Facebook Groups:</strong> Indian diaspora communities (NPIO, INOC, regional groups)</li>
+                <li><strong>Community Platforms:</strong> Eknazar (classifieds), Deshvidesh (events), Sulekha (professionals)</li>
+                <li><strong>RAG Engine:</strong> Immigration blogs, visa guides, community forums</li>
+            </ul>
+
+            <h3>Data Quality & Freshness</h3>
+            <ul>
+                <li>Real-time APIs update within minutes (Places)</li>
+                <li>Scraper-based sources update daily/weekly via Activepieces</li>
+                <li>Deduplication and quality checks remove outdated/invalid entries</li>
+                <li>User feedback loop improves data quality over time</li>
+            </ul>
+        </div>
+
+        <!-- TAB 4: Features -->
+        <div class="content">
+            <h2>Feature Modules</h2>
+
+            <p>Hello Desi is built on 5 core service pillars, deployed in phases.</p>
+
+            <h3>Module 1: Community & Info Hub (MVP - Phase 1)</h3>
+            <div class="feature-card">
+                <h4>Purpose</h4>
+                <p>Centralized hub for Indian diaspora events, festivals, temples, and community organizations.</p>
+            </div>
+            <ul>
+                <li>Diwali, Holi, Navratri event listings</li>
+                <li>Temple locations, puja schedules</li>
+                <li>Community organization directory</li>
+                <li>Regional meetup groups (California, Texas, NY)</li>
+                <li>Festival celebration guides and traditions</li>
+                <li>Natural language queries: "Where can I celebrate Diwali in California?"</li>
+            </ul>
+
+            <h3>Module 2: Services Directory (MVP - Phase 1)</h3>
+            <div class="feature-card">
+                <h4>Purpose</h4>
+                <p>Curated directory of services trusted by Indian diaspora, with AI-powered discovery.</p>
+            </div>
+            <ul>
+                <li><strong>Restaurants:</strong> Indian, fusion, regional cuisines with ratings/reviews</li>
+                <li><strong>Groceries:</strong> Indian grocery stores, specialty shops</li>
+                <li><strong>Healthcare:</strong> Doctors (including Ayurveda), dental, traditional medicine</li>
+                <li><strong>Legal:</strong> Immigration lawyers, visa specialists</li>
+                <li><strong>Financial:</strong> Tax preparers, accountants familiar with NRI taxes</li>
+                <li>Natural language queries: "Where can I get halal biryani near me?" or "Find an immigration lawyer who speaks Hindi"</li>
+            </ul>
+
+            <h3>Module 3: Immigration & Visa Help (Phase 2)</h3>
+            <div class="feature-card">
+                <h4>Purpose</h4>
+                <p>Authoritative, AI-assistant guidance on US immigration processes for Indian professionals.</p>
+            </div>
+            <ul>
+                <li><strong>H-1B Guidance:</strong> Timeline, requirements, quota info, RFE handling</li>
+                <li><strong>EB-2/EB-3 Sponsorship:</strong> PERM labor certification, green card timeline</li>
+                <li><strong>USCIS Processes:</strong> Form I-129, I-140, I-485 guidance</li>
+                <li><strong>Visa Interview Prep:</strong> Common questions, documentation checklists</li>
+                <li><strong>Dependents:</strong> H-4 EAD, L-2, family immigration</li>
+                <li><strong>Citizenship:</strong> N-400, naturalization eligibility</li>
+                <li>Disclaimers: "This is informational only, consult a lawyer for legal advice"</li>
+            </ul>
+
+            <h3>Module 4: Financial Services (Phase 2)</h3>
+            <div class="feature-card">
+                <h4>Purpose</h4>
+                <p>Guidance on NRI financial matters, remittance rates, and investment options.</p>
+            </div>
+            <ul>
+                <li><strong>Remittance Rates:</strong> Real-time comparison of transfer providers</li>
+                <li><strong>NRE/NRO Accounts:</strong> Bank recommendations, tax implications</li>
+                <li><strong>NRI Taxation:</strong> FBAR, FATCA, double taxation avoidance</li>
+                <li><strong>Investment in India:</strong> Real estate, stocks, mutual funds for NRIs</li>
+                <li><strong>Pensions & Benefits:</strong> Passport renewal with US address, old age benefits</li>
+                <li>Disclaimers: "Not financial advice, consult a tax professional"</li>
+            </ul>
+
+            <h3>Module 5: Classifieds (Phase 2)</h3>
+            <div class="feature-card">
+                <h4>Purpose</h4>
+                <p>Community marketplace for roommates, furniture, services, and job opportunities.</p>
+            </div>
+            <ul>
+                <li>Roommate matching with location filters</li>
+                <li>Furniture buy/sell (moving season surge)</li>
+                <li>Job postings (community referral jobs)</li>
+                <li>Services marketplace (tutoring, cooking, cleaning)</li>
+                <li>Vehicle carpool coordination</li>
+                <li>Post aggregation from Eknazar, Deshvidesh, and user submissions</li>
+            </ul>
+
+            <h3>Cross-Module Capabilities</h3>
+            <ul>
+                <li><strong>Multilingual:</strong> All modules support English, Hindi, Hinglish</li>
+                <li><strong>Contextual:</strong> AI understands cultural nuances and diaspora-specific challenges</li>
+                <li><strong>Personalized:</strong> Learns user preferences, location, language, interests</li>
+                <li><strong>Real-Time:</strong> Live event listings, rate updates, availability checks</li>
+                <li><strong>Verified:</strong> Sources cited, disclaimers for sensitive topics (legal, medical, financial)</li>
+            </ul>
+        </div>
+
+        <!-- TAB 5: Roadmap -->
+        <div class="content">
+            <h2>Development Roadmap</h2>
+
+            <p>Hello Desi is deployed in 4 phases over 24 weeks (6 months). MVP is production-ready within 4 weeks.</p>
+
+            <h3>Phase 1: Foundation & MVP Core (Weeks 1-4)</h3>
+            <div class="phase-box">
+                <h4>Goal: Launch MVP with Community Hub + Services Directory</h4>
+                <p><strong>Deliverables:</strong></p>
+                <ul>
+                    <li>WhatsApp Cloud API integration</li>
+                    <li>FastAPI backend with session management</li>
+                    <li>Supabase database schema (users, services, events)</li>
+                    <li>Claude API integration (Haiku for fast responses)</li>
+                    <li>Google Places API integration (services data)</li>
+                    <li>Basic Community Hub (temples, events)</li>
+                    <li>Services Directory (restaurants, groceries, doctors)</li>
+                    <li>English language baseline</li>
+                    <li>Beta test with 50 users</li>
+                </ul>
+            </div>
+
+            <h3>Phase 2: Community + Immigration (Weeks 5-8)</h3>
+            <div class="phase-box">
+                <h4>Goal: Expand features and launch Phase 2 modules</h4>
+                <p><strong>Deliverables:</strong></p>
+                <ul>
+                    <li>Multilingual support (Hindi + Hinglish)</li>
+                    <li>Facebook groups scraper integration (Apify)</li>
+                    <li>Immigration & Visa Help module (RAG + lawyer review)</li>
+                    <li>Firecrawl AI integration for RAG</li>
+                    <li>Claude Sonnet for complex reasoning (10% of queries)</li>
+                    <li>Community event calendar</li>
+                    <li>Expand to 500 users</li>
+                    <li>Monetization setup (featured listings)</li>
+                </ul>
+            </div>
+
+            <h3>Phase 3: Full Feature Set + Scale (Weeks 9-16)</h3>
+            <div class="phase-box">
+                <h4>Goal: Complete all modules and optimize for scale</h4>
+                <p><strong>Deliverables:</strong></p>
+                <ul>
+                    <li>Financial Services module (NRI banking, remittance rates)</li>
+                    <li>Classifieds module (roommates, furniture, jobs)</li>
+                    <li>Hexofy integration (professional curation)</li>
+                    <li>Zerowork integration (classified listings)</li>
+                    <li>Referral program launch</li>
+                    <li>Analytics dashboard (usage, satisfaction)</li>
+                    <li>Performance optimization (caching, indexing)</li>
+                    <li>Scale to 5,000 users</li>
+                </ul>
+            </div>
+
+            <h3>Phase 4: Growth & Monetization (Weeks 17-24)</h3>
+            <div class="phase-box">
+                <h4>Goal: Drive user growth and launch revenue streams</h4>
+                <p><strong>Deliverables:</strong></p>
+                <ul>
+                    <li>Referral commission system (users, businesses)</li>
+                    <li>Premium subscription tier ($3-5/user/mo)</li>
+                    <li>Business partnership program</li>
+                    <li>Marketing campaigns (Reddit, Facebook groups, community events)</li>
+                    <li>User acquisition to 50,000+ users</li>
+                    <li>Revenue target: $5,000-10,000/month</li>
+                    <li>Infrastructure scale (multi-region)</li>
+                    <li>Advanced analytics and personalization</li>
+                </ul>
+            </div>
+
+            <h3>Milestone Timeline</h3>
+            <ul>
+                <li><strong>Week 2:</strong> MVP alpha with first 10 users</li>
+                <li><strong>Week 4:</strong> Public beta launch (50 users)</li>
+                <li><strong>Week 8:</strong> Phase 1 complete (500 users)</li>
+                <li><strong>Week 12:</strong> All modules live (2,500 users)</li>
+                <li><strong>Week 16:</strong> Monetization alpha (5,000 users)</li>
+                <li><strong>Week 20:</strong> Scaled growth (25,000 users)</li>
+                <li><strong>Week 24:</strong> Sustainable profitability (50,000+ users)</li>
+            </ul>
+        </div>
+
+        <!-- TAB 6: Costs -->
+        <div class="content">
+            <h2>Cost Analysis</h2>
+
+            <p>Hello Desi's infrastructure is designed to be lean and scalable. Costs remain relatively flat until reaching 10,000+ users.</p>
+
+            <h3>MVP Phase (Weeks 1-4) - ~500 Users</h3>
+            <div class="cost-table">
+                <table>
+                    <tr>
+                        <th>Component</th>
+                        <th>Unit Cost</th>
+                        <th>Monthly Cost</th>
+                    </tr>
+                    <tr>
+                        <td>WhatsApp Cloud API</td>
+                        <td>$0.005/conversation (avg 2)</td>
+                        <td>$5</td>
+                    </tr>
+                    <tr>
+                        <td>Railway Hosting</td>
+                        <td>$20/month</td>
+                        <td>$20</td>
+                    </tr>
+                    <tr>
+                        <td>Claude API (Haiku 90%)</td>
+                        <td>~$0.0008/query</td>
+                        <td>$40</td>
+                    </tr>
+                    <tr>
+                        <td>Google Places API</td>
+                        <td>$25/month (quota)</td>
+                        <td>$25</td>
+                    </tr>
+                    <tr>
+                        <td>Firecrawl AI (RAG)</td>
+                        <td>$16/month</td>
+                        <td>$16</td>
+                    </tr>
+                    <tr>
+                        <td>Apify (FB Scraper)</td>
+                        <td>$10/month</td>
+                        <td>$10</td>
+                    </tr>
+                    <tr>
+                        <td>Zerowork (Classifieds)</td>
+                        <td>$15/month</td>
+                        <td>$15</td>
+                    </tr>
+                    <tr>
+                        <td>Hexofy (Professionals)</td>
+                        <td>$12/month</td>
+                        <td>$12</td>
+                    </tr>
+                    <tr>
+                        <td>Supabase (free)</td>
+                        <td>Free tier</td>
+                        <td>$0</td>
+                    </tr>
+                    <tr>
+                        <td>Upstash Redis (free)</td>
+                        <td>Free tier</td>
+                        <td>$0</td>
+                    </tr>
+                    <tr style="font-weight: bold; background: #fff9f0;">
+                        <td>TOTAL</td>
+                        <td></td>
+                        <td>$143 (MVP only), $220 with Sonnet buffer</td>
+                    </tr>
+                </table>
+            </div>
+
+            <h3>Growth Phase (Weeks 9-16) - ~5,000 Users</h3>
+            <div class="stat-box">
+                <div class="number">$1,100</div>
+                <div class="label">Monthly Cost at 5,000 Users</div>
+            </div>
+            <table>
+                <tr>
+                    <th>Component</th>
+                    <th>Monthly Cost</th>
+                    <th>Notes</th>
+                </tr>
+                <tr>
+                    <td>WhatsApp API (10 conversations/user)</td>
+                    <td>$250</td>
+                    <td>Higher conversation volume</td>
+                </tr>
+                <tr>
+                    <td>Railway Hosting</td>
+                    <td>$50</td>
+                    <td>Upgraded tier for load</td>
+                </tr>
+                <tr>
+                    <td>Claude API (Haiku 85%, Sonnet 15%)</td>
+                    <td>$400</td>
+                    <td>More complex queries</td>
+                </tr>
+                <tr>
+                    <td>Data Pipeline (all sources)</td>
+                    <td>$100</td>
+                    <td>Places, Apify, Zerowork, Hexofy, Firecrawl</td>
+                </tr>
+                <tr>
+                    <td>Supabase (upgraded)</td>
+                    <td>$50</td>
+                    <td>Higher query volume</td>
+                </tr>
+                <tr>
+                    <td>Upstash Redis (upgraded)</td>
+                    <td>$20</td>
+                    <td>More concurrent sessions</td>
+                </tr>
+                <tr>
+                    <td>Monitoring & Ops</td>
+                    <td>$30</td>
+                    <td>Sentry, alerting</td>
+                </tr>
+                <tr style="font-weight: bold; background: #fff9f0;">
+                    <td>TOTAL</td>
+                    <td>$900-1,100</td>
+                    <td>Cost per user: $0.18-0.22</td>
+                </tr>
+            </table>
+
+            <h3>Scale Phase - 50,000 Users</h3>
+            <div class="stat-box">
+                <div class="number">$8,500</div>
+                <div class="label">Monthly Cost at 50,000 Users</div>
+            </div>
+            <table>
+                <tr>
+                    <th>Component</th>
+                    <th>Monthly Cost</th>
+                </tr>
+                <tr>
+                    <td>WhatsApp API</td>
+                    <td>$2,500</td>
+                </tr>
+                <tr>
+                    <td>Hosting & Compute</td>
+                    <td>$200</td>
+                </tr>
+                <tr>
+                    <td>Claude API</td>
+                    <td>$3,500</td>
+                </tr>
+                <tr>
+                    <td>Database & Cache</td>
+                    <td>$300</td>
+                </tr>
+                <tr>
+                    <td>Data Pipeline</td>
+                    <td>$500</td>
+                </tr>
+                <tr>
+                    <td>Ops & Monitoring</td>
+                    <td>$100</td>
+                </tr>
+                <tr style="font-weight: bold; background: #fff9f0;">
+                    <td>TOTAL</td>
+                    <td>$7,100-8,500</td>
+                </tr>
+            </table>
+
+            <h3>Cost Efficiency Insights</h3>
+            <ul>
+                <li><strong>Fixed Costs:</strong> ~$200/month (hosting, monitoring)</li>
+                <li><strong>Variable Costs:</strong> Scale with users (WhatsApp API, Claude API)</li>
+                <li><strong>Cost Per User:</strong> Decreases from $0.44 (MVP) to $0.17 (50K users)</li>
+                <li><strong>Breakeven:</strong> ~3,000 users with featured listings monetization</li>
+                <li><strong>Claude Choice:</strong> Haiku/Sonnet mix is 60% cheaper than GPT-4 for same quality</li>
+                <li><strong>Self-Hosting:</strong> Activepieces (free) avoids $200-500/mo automation tools</li>
+            </ul>
+        </div>
+
+        <!-- TAB 7: Monetization -->
+        <div class="content">
+            <h2>Monetization Strategy</h2>
+
+            <p>Hello Desi targets multiple revenue streams designed for sustainable growth without compromising user experience.</p>
+
+            <h3>Revenue Stream 1: Featured Business Listings</h3>
+            <div class="feature-card">
+                <h4>Model: Premium placement for service providers</h4>
+                <p><strong>Price:</strong> $25-50/business/month</p>
+                <p><strong>Target:</strong> Indian restaurants, doctors, lawyers, accountants</p>
+            </div>
+            <ul>
+                <li>Premium position in search results</li>
+                <li>Verified badge and reviews</li>
+                <li>Monthly analytics dashboard</li>
+                <li>Direct chat link to business</li>
+                <li>First 100 businesses at $25/mo (supporter rate)</li>
+                <li>Growth rate: +50 businesses/month</li>
+            </ul>
+
+            <h3>Revenue Stream 2: Referral Commissions</h3>
+            <div class="feature-card">
+                <h4>Model: Earn commission on user referrals and service bookings</h4>
+                <p><strong>Commission:</strong> $5-20 per booking/referral</p>
+                <p><strong>Target:</strong> Immigration lawyers, tax consultants, financial advisors</p>
+            </div>
+            <ul>
+                <li>12-15% referral commission from partner businesses</li>
+                <li>Immigration lawyer referrals: $20/referral (highest value)</li>
+                <li>Tax consultant referrals: $10/referral</li>
+                <li>Restaurant reservations: $2-5/booking</li>
+                <li>Volume target: 200+ referrals/month by month 6</li>
+            </ul>
+
+            <h3>Revenue Stream 3: Event Promotions</h3>
+            <div class="feature-card">
+                <h4>Model: Promoted listings for community events</h4>
+                <p><strong>Price:</strong> $50-100/event</p>
+                <p><strong>Target:</strong> Diwali/Holi celebrations, weddings, community events</p>
+            </div>
+            <ul>
+                <li>Featured event listing in community hub</li>
+                <li>Push notification to users (with permissions)</li>
+                <li>Event analytics (views, shares)</li>
+                <li>Seasonal surge (Diwali, Holi, Navratri)</li>
+                <li>Target: 50+ events/month at peak</li>
+            </ul>
+
+            <h3>Revenue Stream 4: Premium Subscription (Phase 3)</h3>
+            <div class="feature-card">
+                <h4>Model: Premium features for power users</h4>
+                <p><strong>Price:</strong> $3-5/user/month</p>
+                <p><strong>Target:</strong> 5-10% of active users</p>
+            </div>
+            <ul>
+                <li>Ad-free experience</li>
+                <li>Unlimited saved preferences</li>
+                <li>Priority customer support</li>
+                <li>Exclusive content (immigration strategy guides, financial webinars)</li>
+                <li>Early access to new features</li>
+                <li>Tax report export (for NRI users)</li>
+                <li>Adoption target: 5% of users</li>
+            </ul>
+
+            <h3>Revenue Projections</h3>
+            <div class="revenue-projection">
+                <div class="revenue-card">
+                    <div class="period">Month 3 (MVP)</div>
+                    <div class="amount">$0</div>
+                    <p>Focus on user acquisition</p>
+                </div>
+                <div class="revenue-card">
+                    <div class="period">Month 6</div>
+                    <div class="amount">$250-500</div>
+                    <p>10-20 featured listings + referrals</p>
+                </div>
+                <div class="revenue-card">
+                    <div class="period">Month 12</div>
+                    <div class="amount">$2,000-3,500</div>
+                    <p>50+ businesses, 200+ referrals/mo</p>
+                </div>
+                <div class="revenue-card">
+                    <div class="period">Month 18</div>
+                    <div class="amount">$6,000-10,000</div>
+                    <p>100+ businesses, premium subs, event promos</p>
+                </div>
+                <div class="revenue-card">
+                    <div class="period">Month 24</div>
+                    <div class="amount">$15,000-25,000</div>
+                    <p>Sustained growth, affiliate partnerships</p>
+                </div>
+            </div>
+
+            <h3>Path to Profitability</h3>
+            <ul>
+                <li><strong>Breakeven:</strong> Month 6-8 with 1,000-3,000 users</li>
+                <li><strong>Cash Flow Positive:</strong> Month 10-12</li>
+                <li><strong>Operating Margin:</strong> 60-70% at scale</li>
+                <li><strong>Annual Revenue Target (Year 2):</strong> $200,000+</li>
+            </ul>
+
+            <h3>Monetization Constraints</h3>
+            <ul>
+                <li><strong>No Ads:</strong> Diaspora users are ad-averse; premium experience protects retention</li>
+                <li><strong>No Data Sales:</strong> Trust is critical; user data never shared with third parties</li>
+                <li><strong>Transparent Pricing:</strong> All costs and commissions disclosed upfront</li>
+                <li><strong>Free Core:</strong> Community hub and information remain free forever</li>
+            </ul>
+        </div>
+
+        <!-- TAB 8: Risks -->
+        <div class="content">
+            <h2>Risk Analysis & Mitigation</h2>
+
+            <p>Hello Desi faces several risks inherent to Meta platforms, AI products, and legal content. Here's our assessment and mitigation strategy.</p>
+
+            <h3>Critical Risks</h3>
+
+            <div class="risk-item high">
+                <span class="risk-badge high">HIGH</span>
+                <h4>WhatsApp Policy Risk - Meta Bot Bans</h4>
+                <p><strong>Risk:</strong> Meta banned general bots on WhatsApp in January 2026. Hello Desi is classified as a "service bot" (community info + referrals), but could face restrictions on feature expansion or conversation volume limits.</p>
+                <p><strong>Impact:</strong> Loss of WhatsApp distribution, significant user loss, forced platform pivot</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Stay in "service bot" category (NOT general chat bot)</li>
+                    <li>Maintain conversation value focus (referrals, transactions, info)</li>
+                    <li>Proactive communication with Meta Business account manager</li>
+                    <li>Document business model as service provider (not entertainment)</li>
+                    <li>Parallel channel development (SMS, Web, Telegram) as backup</li>
+                    <li>Legal review of WhatsApp terms monthly</li>
+                </ul>
+            </div>
+
+            <div class="risk-item high">
+                <span class="risk-badge high">HIGH</span>
+                <h4>Legal Liability - Immigration & Financial Guidance</h4>
+                <p><strong>Risk:</strong> Providing immigration and financial information creates legal liability. Bad advice could harm users or expose Hello Desi to lawsuits from users following incorrect guidance.</p>
+                <p><strong>Impact:</strong> Legal costs, reputational damage, regulatory action, operational shutdown</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Legal disclaimers on all sensitive advice ("Not legal/financial advice")</li>
+                    <li>Lawyer and CPA review of all immigration/finance content monthly</li>
+                    <li>RAG sources cite official USCIS/IRS only (not user-generated)</li>
+                    <li>Errors flagged to users immediately with correction</li>
+                    <li>Insurance policy covering liability ($2M coverage)</li>
+                    <li>Clear escalation to lawyers/advisors for complex cases</li>
+                    <li>No personalized immigration/tax advice (informational only)</li>
+                </ul>
+            </div>
+
+            <h3>High Medium Risks</h3>
+
+            <div class="risk-item medium">
+                <span class="risk-badge medium">MEDIUM</span>
+                <h4>AI Hallucination - Incorrect Information</h4>
+                <p><strong>Risk:</strong> Claude can hallucinate plausible-sounding but false information (immigration timelines, remittance rates, service details). Users may trust and act on false information.</p>
+                <p><strong>Impact:</strong> User harm, trust loss, legal liability</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>RAG architecture: cite sources for all answers (no unsourced responses)</li>
+                    <li>Confidence thresholds: decline to answer if confidence <70%</li>
+                    <li>Fact-checking layer: validation against source documents</li>
+                    <li>User feedback loop: flag incorrect responses immediately</li>
+                    <li>Regular model testing against known Q&A (monthly)</li>
+                    <li>Separate knowledge bases per domain (immigration, finance, services)</li>
+                </ul>
+            </div>
+
+            <div class="risk-item medium">
+                <span class="risk-badge medium">MEDIUM</span>
+                <h4>Cold Start Problem & Data Freshness</h4>
+                <p><strong>Risk:</strong> Building comprehensive, fresh data for new geographic markets is slow and expensive. Old/stale data reduces quality and user trust. Facebook groups and classifieds become outdated within days.</p>
+                <p><strong>Impact:</strong> Slow user acquisition, low satisfaction in new markets, high scraping costs</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Launch in dense Indian diaspora cities first (California, Texas, New York)</li>
+                    <li>Daily data refreshes for scraper sources (Apify, Zerowork)</li>
+                    <li>User-submitted data with karma system (rewards accurate info)</li>
+                    <li>Community-curated lists (expert moderators for lawyers, doctors)</li>
+                    <li>Batch expansion: add one new metro every 2-4 weeks</li>
+                    <li>Regional partnerships with community organizations</li>
+                </ul>
+            </div>
+
+            <div class="risk-item medium">
+                <span class="risk-badge medium">MEDIUM</span>
+                <h4>User Acquisition & Cold Start</h4>
+                <p><strong>Risk:</strong> Expensive and slow to acquire first 1,000 users. Community platforms (Facebook groups, Reddit) are saturated; word-of-mouth takes time. Paid ads (Facebook) may be ineffective.</p>
+                <p><strong>Impact:</strong> Slow growth, higher CAC (customer acquisition cost), delayed profitability</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Organic growth: partnerships with community orgs, temples, professional associations</li>
+                    <li>Referral program: $5 credit per user referred (month 3+)</li>
+                    <li>Reddit/FB group outreach (genuine problem solving, not spam)</li>
+                    <li>Press in Indian diaspora media (NRI news outlets)</li>
+                    <li>Strategic partnerships with event organizers (Diwali, Holi events)</li>
+                    <li>Free featured listings for early adopter businesses</li>
+                    <li>Target CAC: <$2/user (organic + referral)</li>
+                </ul>
+            </div>
+
+            <h3>Emerging Risks</h3>
+
+            <div class="risk-item medium">
+                <span class="risk-badge medium">MEDIUM</span>
+                <h4>Data Privacy & Compliance</h4>
+                <p><strong>Risk:</strong> Storing user data (chat history, preferences, location) creates privacy obligations under GDPR (if EU users), CCPA (California), and Indian data protection laws (if accessing India resources).</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Privacy policy disclosures (clear data use terms)</li>
+                    <li>No data sharing with third parties without consent</li>
+                    <li>User data deletion on request (GDPR Article 17)</li>
+                    <li>Encrypted storage for sensitive fields</li>
+                    <li>Annual privacy audit</li>
+                </ul>
+            </div>
+
+            <div class="risk-item medium">
+                <span class="risk-badge medium">MEDIUM</span>
+                <h4>Dependency on Meta's WhatsApp Platform</h4>
+                <p><strong>Risk:</strong> 100% reliance on WhatsApp Cloud API. Any API changes, pricing increases, or service degradation directly impact business.</p>
+                <p><strong>Mitigation:</strong></p>
+                <ul>
+                    <li>Parallel channels: SMS, Telegram, Web dashboard as fallback</li>
+                    <li>Phase 2: SMS gateway integration (backup communication)</li>
+                    <li>Web interface for users without WhatsApp</li>
+                    <li>Vendor diversification by month 12</li>
+                </ul>
+            </div>
+
+            <h3>Risk Summary Table</h3>
+            <table>
+                <tr>
+                    <th>Risk</th>
+                    <th>Severity</th>
+                    <th>Probability</th>
+                    <th>Mitigation Priority</th>
+                </tr>
+                <tr>
+                    <td>WhatsApp policy enforcement</td>
+                    <td>CRITICAL</td>
+                    <td>High</td>
+                    <td>URGENT (Weeks 1-2)</td>
+                </tr>
+                <tr>
+                    <td>Legal liability (immigration/finance)</td>
+                    <td>CRITICAL</td>
+                    <td>High</td>
+                    <td>URGENT (Weeks 1-2)</td>
+                </tr>
+                <tr>
+                    <td>AI hallucination</td>
+                    <td>High</td>
+                    <td>Medium</td>
+                    <td>Phase 1 (Weeks 1-4)</td>
+                </tr>
+                <tr>
+                    <td>Data freshness</td>
+                    <td>Medium</td>
+                    <td>High</td>
+                    <td>Phase 1 (Weeks 1-4)</td>
+                </tr>
+                <tr>
+                    <td>User acquisition</td>
+                    <td>Medium</td>
+                    <td>Medium</td>
+                    <td>Phase 2 (Weeks 5-8)</td>
+                </tr>
+                <tr>
+                    <td>Data privacy compliance</td>
+                    <td>Medium</td>
+                    <td>Low</td>
+                    <td>Phase 1 (Weeks 1-4)</td>
+                </tr>
+            </table>
+        </div>
+
+        <footer>
+            <p>Hello Desi - Final Project Plan | Comprehensive roadmap and technical specification | March 2026</p>
+        </footer>
+    </div>
+
+    <script>
+        function showTab(index) {
+            // Hide all content
+            const contents = document.querySelectorAll('.content');
+            contents.forEach(content => {
+                content.classList.remove('active');
+            });
+
+            // Remove active class from all buttons
+            const buttons = document.querySelectorAll('.tab-button');
+            buttons.forEach(button => {
+                button.classList.remove('active');
+            });
+
+            // Show selected content
+            contents[index].classList.add('active');
+
+            // Add active class to clicked button
+            buttons[index].classList.add('active');
+
+            // Scroll to top
+            window.scrollTo(0, 0);
+        }
+    </script>
+</body>
+</html>
