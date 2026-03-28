@@ -228,7 +228,7 @@ def search_businesses(
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         query = client.table("businesses").select(
-            "name, category, subcategory, address, city, state, phone, rating, review_count"
+            "id, name, category, subcategory, address, city, state, phone, rating, review_count, is_featured"
         )
 
         if category:
@@ -239,7 +239,8 @@ def search_businesses(
         elif state:
             query = query.eq("state", state)
 
-        query = query.order("rating", desc=True).order("review_count", desc=True)
+        # Featured businesses always appear first, then sort by rating
+        query = query.order("is_featured", desc=True).order("rating", desc=True).order("review_count", desc=True)
         query = query.limit(limit)
 
         result = query.execute()
@@ -261,11 +262,12 @@ def format_businesses_for_prompt(businesses: list[dict]) -> str:
 
     lines = ["\n\n📍 **Matching businesses from our database:**\n"]
     for i, b in enumerate(businesses, 1):
+        featured = "⭐ FEATURED " if b.get('is_featured') else ""
         stars = f"⭐ {b['rating']}" if b.get('rating') else ""
         reviews = f"({b['review_count']} reviews)" if b.get('review_count') else ""
         phone = f"📞 {b['phone']}" if b.get('phone') else ""
         lines.append(
-            f"{i}. *{b['name']}* — {b.get('subcategory', b['category'])}\n"
+            f"{i}. {featured}*{b['name']}* — {b.get('subcategory', b['category'])}\n"
             f"   📍 {b['address']}\n"
             f"   {stars} {reviews} {phone}"
         )

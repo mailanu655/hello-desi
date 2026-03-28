@@ -53,6 +53,13 @@ Please consult a qualified financial advisor."
 - If a user asks about editing or updating their listing, tell them to type "update my business"
 - If a user asks about deals, offers, promotions, or discounts, tell them to type "deals near me" or "deals in [city]"
 - If a business owner asks about promoting or advertising, tell them to type "post a deal"
+9. Business monetization — owners can upgrade to Featured or Premium plans
+10. Business analytics — owners can check how many people viewed their listing
+
+Monetization commands:
+- If a business owner asks about upgrading, featuring, or promoting their listing → tell them to type "feature my business"
+- If a business owner asks about their stats, analytics, views, or inquiries → tell them to type "my stats"
+- If a business owner asks about their plan or subscription → tell them to type "my plan"
 """
 
 
@@ -107,6 +114,12 @@ async def generate_response(
             if results:
                 business_context = format_businesses_for_prompt(results)
                 logger.info(f"Found {len(results)} businesses for query from {wa_id}")
+                # Log inquiries for monetization tracking
+                try:
+                    from app.services.monetization_service import log_inquiry
+                    log_inquiry(results, wa_id, "search", message, settings)
+                except Exception as inq_err:
+                    logger.warning(f"Inquiry logging failed: {inq_err}")
         except Exception as e:
             logger.warning(f"Business lookup failed for {wa_id}: {e}")
 

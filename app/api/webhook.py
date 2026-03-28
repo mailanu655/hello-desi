@@ -146,6 +146,41 @@ async def handle_message(
             await whatsapp.send_text_message(wa_id, response_text)
             return {"status": "ok"}
 
+        # ── Check for monetization flow ─────────────────────────
+        from app.services.monetization_service import (
+            detect_monetization_intent,
+            has_active_upgrade_session,
+            handle_upgrade_message,
+            start_upgrade_flow,
+            get_business_stats,
+            get_plan_status,
+        )
+
+        # If user already has an active upgrade session, handle it
+        if has_active_upgrade_session(wa_id):
+            response_text = handle_upgrade_message(wa_id, message_body, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
+        # Check if this is a new monetization intent
+        money_intent = detect_monetization_intent(message_body)
+        if money_intent == "upgrade":
+            response_text = start_upgrade_flow(wa_id)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif money_intent == "stats":
+            response_text = get_business_stats(wa_id, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif money_intent == "plan":
+            response_text = get_plan_status(wa_id, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
         # ── Normal AI response flow ──────────────────────────────
         from app.services.claude_service import generate_response
 

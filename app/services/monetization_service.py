@@ -1,0 +1,496 @@
+"""
+Hello Desi — Monetization Service
+
+Handles:
+  1. Featured Listings — upgrade/downgrade, Stripe payment link generation
+  2. Lead Gen / Inquiry Tracking — log every business view/inquiry
+  3. Subscription management — free/featured/premium tiers
+  4. Business analytics — show owners their inquiry stats
+
+WhatsApp commands:
+  - "feature my business" / "upgrade my business" → Featured listing flow
+  - "my stats" / "my analytics" → Show inquiry count for their business
+  - "my plan" / "my subscription" → Show current subscription tier
+"""
+
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+
+from supabase import create_client
+from config.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+SESSION_TIMEOUT = 600  # 10 minutes
+
+# ── Pricing ─────────────────────────────────────────────────────
+PLANS = {
+    "free": {
+        "label": "Free",
+        "price": "$0/month",
+        "deals_per_month": 1,
+        "featured": False,
+        "analytics": False,
+    },
+    "featured": {
+        "label": "⭐ Featured",
+        "price": "$15/month",
+        "deals_per_month": 5,
+        "featured": True,
+        "analytics": True,
+    },
+    "premium": {
+        "label": "👑 Premium",
+        "price": "$30/month",
+        "deals_per_month": 999,
+        "featured": True,
+        "analytics": True,
+    },
+}
+
+
+# ── Upgrade flow steps ──────────────────────────────────────────
+class UpgradeStep(str, Enum):
+    BUSINESS_LOOKUP = "business_lookup"
+    SELECT_BUSINESS = "select_business"
+    CHOOSE_PLAN = "choose_plan"
+    CONFIRM = "confirm"
+
+
+@dataclass
+class UpgradeSession:
+    wa_id: str
+    step: str
+    data: dict = field(default_factory=dict)
+    matches: list = field(default_factory=list)
+    updated_at: float = field(default_factory=time.time)
+
+
+_upgrade_sessions: dict[str, UpgradeSession] = {}
+
+
+def _clean_expired():
+    now = time.time()
+    expired = [k for k, v in _upgrade_sessions.items() if now - v.updated_at > SESSION_TIMEOUT]
+    for k in expired:
+        del _upgrade_sessions[k]
+
+
+def has_active_upgrade_session(wa_id: str) -> bool:
+    _clean_expired()
+    return wa_id in _upgrade_sessions
+
+
+# ── Intent detection ────────────────────────────────────────────
+def detect_monetization_intent(message: str) -> str | None:
+    """
+    Detect monetization-related intents.
+    Returns "upgrade", "stats", "plan", or None.
+    """
+    msg = message.lower().strip()
+
+    upgrade_phrases = [
+        "feature my business", "upgrade my business", "promote my business",
+        "featured listing", "get featured", "upgrade listing",
+        "boost my business", "premium listing", "upgrade my plan",
+        "i want featured", "make my business featured",
+    ]
+    stats_phrases = [
+        "my stats", "my analytics", "how many views",
+        "business stats", "business analytics", "my inquiries",
+        "how is my business doing", "my performance",
+    ]
+    plan_phrases = [
+        "my plan", "my subscription", "current plan",
+        "what plan", "which plan", "subscription status",
+    ]
+
+    for phrase in upgrade_phrases:
+        if phrase in msg:
+            return "upgrade"
+    for phrase in stats_phrases:
+        if phrase in msg:
+            return "stats"
+    for phrase in plan_phrases:
+        if phrase in msg:
+            return "plan"
+    return None
+
+
+# ── Start upgrade flow ──────────────────────────────────────────
+def start_upgrade_flow(wa_id: str) -> str:
+    _upgrade_sessions[wa_id] = UpgradeSession(
+        wa_id=wa_id,
+        step=UpgradeStep.BUSINESS_LOOKUP,
+    )
+    return (
+        "Let's upgrade your business listing! 🚀\n\n"
+        "Tell me your *business name* or *phone number* "
+        "so I can find your listing."
+    )
+
+
+def _plan_menu(current_plan: str = "free") -> str:
+    lines = ["Choose a plan (reply with the number):\n"]
+    i = 1
+    for key, p in PLANS.items():
+        if key == current_plan:
+            lines.append(f"{i}. {p['label']} — {p['price']} ✅ *Current*")
+        else:
+            extras = []
+            if p['featured']:
+                extras.append("⭐ Featured badge")
+            if p['analytics']:
+                extras.append("📊 Analytics")
+            extras.append(f"🏷️ {p['deals_per_month']} deals/mo")
+            lines.append(f"{i}. {p['label']} — {p['price']}\n   {', '.join(extras)}")
+        i += 1
+    return "\n".join(lines)
+
+
+# ── Upgrade session handler ─────────────────────────────────────
+def handle_upgrade_message(wa_id: str, message: str, settings: Settings) -> str:
+    _clean_expired()
+    session = _upgrade_sessions.get(wa_id)
+    if not session:
+        return "No active session. Say *'feature my business'* to upgrade."
+
+    msg = message.strip()
+    if msg.lower() in ("cancel", "stop", "quit", "exit", "nevermind"):
+        del _upgrade_sessions[wa_id]
+        return "Upgrade cancelled. Let me know if you need anything! 🙏"
+
+    session.updated_at = time.time()
+    return _handle_upgrade_step(session, msg, settings)
+
+
+def _handle_upgrade_step(session: UpgradeSession, msg: str, settings: Settings) -> str:
+    step = session.step
+
+    if step == UpgradeStep.BUSINESS_LOOKUP:
+        return _upgrade_lookup(session, msg, settings)
+
+    elif step == UpgradeStep.SELECT_BUSINESS:
+        return _upgrade_select(session, msg)
+
+    elif step == UpgradeStep.CHOOSE_PLAN:
+        return _upgrade_choose_plan(session, msg, settings)
+
+    elif step == UpgradeStep.CONFIRM:
+        if msg.lower() in ("yes", "y", "confirm", "ok", "👍"):
+            return _activate_plan(session, settings)
+        elif msg.lower() in ("no", "n", "cancel"):
+            del _upgrade_sessions[session.wa_id]
+            return "No worries! Your current plan stays active. 🙏"
+        return "Reply *yes* to confirm or *no* to cancel."
+
+    return "Something went wrong. Type 'cancel' to exit."
+
+
+def _upgrade_lookup(session: UpgradeSession, msg: str, settings: Settings) -> str:
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        digits = "".join(c for c in msg if c.isdigit())
+        if len(digits) >= 7:
+            result = client.table("businesses").select("*").ilike("phone", f"%{digits[-10:]}%").execute()
+        else:
+            result = client.table("businesses").select("*").ilike("name", f"%{msg}%").execute()
+
+        if not result.data:
+            return (
+                "I couldn't find that business. Check the name/phone, "
+                "or *add your business first* by typing 'add my business'.\n"
+                "Type *cancel* to exit."
+            )
+
+        if len(result.data) == 1:
+            session.data["business"] = result.data[0]
+            current = _get_current_plan(result.data[0]["id"], settings)
+            session.data["current_plan"] = current
+            session.step = UpgradeStep.CHOOSE_PLAN
+            b = result.data[0]
+            featured_badge = " ⭐ Featured" if b.get("is_featured") else ""
+            return (
+                f"Found: *{b['name']}*{featured_badge}\n"
+                f"📍 {b.get('city', '')}, {b.get('state', '')}\n"
+                f"Current plan: *{PLANS[current]['label']}*\n\n"
+                f"{_plan_menu(current)}"
+            )
+
+        session.matches = result.data[:5]
+        session.step = UpgradeStep.SELECT_BUSINESS
+        lines = ["Multiple matches. Which one? (reply with number)\n"]
+        for i, b in enumerate(session.matches, 1):
+            lines.append(f"{i}. *{b['name']}* — {b.get('city', '')}, {b.get('state', '')}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Upgrade lookup failed: {e}")
+        return "Sorry, something went wrong. Please try again. 🙏"
+
+
+def _upgrade_select(session: UpgradeSession, msg: str) -> str:
+    try:
+        idx = int(msg.strip()) - 1
+        if 0 <= idx < len(session.matches):
+            b = session.matches[idx]
+            session.data["business"] = b
+            current = "free"  # default
+            session.data["current_plan"] = current
+            session.step = UpgradeStep.CHOOSE_PLAN
+            return (
+                f"Selected: *{b['name']}*\n"
+                f"Current plan: *{PLANS[current]['label']}*\n\n"
+                f"{_plan_menu(current)}"
+            )
+    except (ValueError, IndexError):
+        pass
+    return "Please reply with a number from the list, or *cancel* to exit."
+
+
+def _upgrade_choose_plan(session: UpgradeSession, msg: str, settings: Settings) -> str:
+    plan_keys = list(PLANS.keys())
+    try:
+        idx = int(msg.strip()) - 1
+        if 0 <= idx < len(plan_keys):
+            chosen = plan_keys[idx]
+            if chosen == session.data.get("current_plan"):
+                return "That's already your current plan! Pick a different one, or *cancel*."
+            if chosen == "free":
+                session.data["chosen_plan"] = "free"
+                session.step = UpgradeStep.CONFIRM
+                return (
+                    "You want to switch to the *Free* plan.\n"
+                    "This will remove your Featured badge and limit you to 1 deal/month.\n\n"
+                    "Reply *yes* to confirm or *no* to cancel."
+                )
+            session.data["chosen_plan"] = chosen
+            session.step = UpgradeStep.CONFIRM
+            p = PLANS[chosen]
+            return (
+                f"Great choice! Here's what you'll get with *{p['label']}* ({p['price']}):\n\n"
+                f"⭐ Featured badge — appear first in search\n"
+                f"🏷️ {p['deals_per_month']} deals per month\n"
+                f"📊 Business analytics & inquiry stats\n\n"
+                "Reply *yes* to activate or *no* to cancel.\n"
+                "(Payment link will be sent after confirmation)"
+            )
+    except (ValueError, IndexError):
+        pass
+    return f"Please pick a number.\n\n{_plan_menu(session.data.get('current_plan', 'free'))}"
+
+
+def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
+    """Activate the chosen plan in Supabase."""
+    b = session.data["business"]
+    chosen = session.data["chosen_plan"]
+    p = PLANS[chosen]
+
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Update business featured status
+        client.table("businesses").update({
+            "is_featured": p["featured"]
+        }).eq("id", b["id"]).execute()
+
+        # Upsert subscription record
+        now = datetime.now(timezone.utc)
+        sub_row = {
+            "id": str(uuid.uuid4()),
+            "business_id": b["id"],
+            "wa_id": session.wa_id,
+            "plan": chosen,
+            "status": "active",
+            "deals_per_month": p["deals_per_month"],
+            "starts_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=30)).isoformat() if chosen != "free" else None,
+        }
+        # Delete old subscription for this business first
+        client.table("subscriptions").delete().eq("business_id", b["id"]).execute()
+        client.table("subscriptions").insert(sub_row).execute()
+
+        del _upgrade_sessions[session.wa_id]
+        logger.info(f"Plan activated: {b['name']} → {chosen} by {session.wa_id}")
+
+        if chosen == "free":
+            return (
+                "Done! Your listing is back on the *Free* plan. ✅\n\n"
+                "Want to upgrade again anytime? Just say *'feature my business'*."
+            )
+
+        # For paid plans, send payment instructions
+        return (
+            f"Your *{p['label']}* plan is now active! 🎉🚀\n\n"
+            f"*{b['name']}* now has:\n"
+            f"⭐ Featured badge in search results\n"
+            f"🏷️ Up to {p['deals_per_month']} deals/month\n"
+            f"📊 Business analytics (type *'my stats'*)\n\n"
+            f"💳 To complete payment ({p['price']}), please use this link:\n"
+            f"https://hello-desi.onrender.com/pay/{chosen}\n\n"
+            "Your featured status is active immediately!\n"
+            "Thank you for supporting Hello Desi! 🙏"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to activate plan: {e}")
+        del _upgrade_sessions[session.wa_id]
+        return "Sorry, something went wrong. Please try again later. 🙏"
+
+
+# ── Helper: get current plan ────────────────────────────────────
+def _get_current_plan(business_id: str, settings: Settings) -> str:
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("subscriptions")
+            .select("plan")
+            .eq("business_id", business_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["plan"]
+    except Exception:
+        pass
+    return "free"
+
+
+# ══════════════════════════════════════════════════════════════════
+# LEAD GEN / INQUIRY TRACKING
+# ══════════════════════════════════════════════════════════════════
+
+def log_inquiry(
+    businesses: list[dict],
+    user_wa_id: str,
+    inquiry_type: str,
+    message_snippet: str,
+    settings: Settings,
+) -> None:
+    """Log inquiries for each business shown to a user."""
+    if not businesses:
+        return
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        rows = []
+        for b in businesses:
+            rows.append({
+                "id": str(uuid.uuid4()),
+                "business_id": b.get("id"),
+                "business_name": b.get("name", "Unknown"),
+                "user_wa_id": user_wa_id,
+                "inquiry_type": inquiry_type,
+                "message_snippet": message_snippet[:100] if message_snippet else "",
+                "city": b.get("city"),
+                "state": b.get("state"),
+            })
+        if rows:
+            client.table("inquiry_logs").insert(rows).execute()
+            logger.info(f"Logged {len(rows)} inquiries for user {user_wa_id}")
+    except Exception as e:
+        logger.warning(f"Failed to log inquiries: {e}")
+
+
+# ── Business stats (for owners) ─────────────────────────────────
+def get_business_stats(wa_id: str, settings: Settings) -> str:
+    """Show inquiry stats for businesses owned by this wa_id."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Find businesses submitted by this user
+        biz_result = (
+            client.table("businesses")
+            .select("id, name, city, state, is_featured")
+            .ilike("source_id", f"%{wa_id}%")
+            .execute()
+        )
+
+        if not biz_result.data:
+            return (
+                "I couldn't find any businesses linked to your account.\n"
+                "Add your business first by typing *'add my business'*."
+            )
+
+        lines = ["📊 *Your Business Analytics*\n"]
+        for b in biz_result.data:
+            featured = " ⭐" if b.get("is_featured") else ""
+            # Count inquiries in last 30 days
+            thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            stats = (
+                client.table("inquiry_logs")
+                .select("inquiry_type", count="exact")
+                .eq("business_id", b["id"])
+                .gte("created_at", thirty_days_ago)
+                .execute()
+            )
+
+            count = stats.count if stats.count else 0
+            lines.append(
+                f"🏪 *{b['name']}*{featured}\n"
+                f"   📍 {b.get('city', '')}, {b.get('state', '')}\n"
+                f"   👀 {count} inquiries in last 30 days\n"
+            )
+
+        if any(not b.get("is_featured") for b in biz_result.data):
+            lines.append(
+                "Want more visibility? Upgrade to Featured!\n"
+                "Type *'feature my business'* to get ⭐ priority placement."
+            )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Failed to get stats for {wa_id}: {e}")
+        return "Sorry, couldn't load your stats right now. Try again later. 🙏"
+
+
+def get_plan_status(wa_id: str, settings: Settings) -> str:
+    """Show current subscription plan for this user."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("subscriptions")
+            .select("*, businesses(name, city, state)")
+            .eq("wa_id", wa_id)
+            .eq("status", "active")
+            .execute()
+        )
+
+        if not result.data:
+            return (
+                "You're on the *Free* plan.\n\n"
+                "Upgrade to get featured placement, more deals, and analytics!\n"
+                "Type *'feature my business'* to see plans."
+            )
+
+        lines = ["📋 *Your Subscription*\n"]
+        for sub in result.data:
+            p = PLANS.get(sub["plan"], PLANS["free"])
+            biz = sub.get("businesses", {})
+            biz_name = biz.get("name", "Unknown") if biz else "Unknown"
+            expires = sub.get("expires_at", "")
+            expire_str = ""
+            if expires:
+                try:
+                    exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                    days_left = (exp_dt - datetime.now(timezone.utc)).days
+                    expire_str = f"⏰ {days_left} days remaining"
+                except Exception:
+                    pass
+            lines.append(
+                f"🏪 *{biz_name}*\n"
+                f"   Plan: {p['label']} ({p['price']})\n"
+                f"   🏷️ {p['deals_per_month']} deals/month\n"
+                f"   {expire_str}\n"
+            )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Failed to get plan status for {wa_id}: {e}")
+        return "Sorry, couldn't load your subscription. Try again later. 🙏"
