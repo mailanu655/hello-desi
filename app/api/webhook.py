@@ -115,6 +115,37 @@ async def handle_message(
             await whatsapp.send_text_message(wa_id, response_text)
             return {"status": "ok"}
 
+        # ── Check for deals flow ─────────────────────────────────
+        from app.services.deals_service import (
+            detect_deal_intent,
+            has_active_deal_session,
+            handle_deal_message,
+            start_deal_flow,
+            search_deals,
+            format_deals_for_whatsapp,
+        )
+
+        # If user already has an active deal-posting session, handle it
+        if has_active_deal_session(wa_id):
+            response_text = handle_deal_message(wa_id, message_body, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
+        # Check if this is a new deal intent
+        deal_intent = detect_deal_intent(message_body)
+        if deal_intent == "post":
+            response_text = start_deal_flow(wa_id)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif deal_intent == "browse":
+            deals = search_deals(message_body, settings, limit=5)
+            response_text = format_deals_for_whatsapp(deals)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
         # ── Normal AI response flow ──────────────────────────────
         from app.services.claude_service import generate_response
 

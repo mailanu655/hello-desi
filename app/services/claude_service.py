@@ -38,6 +38,8 @@ What you help with:
 4. Financial services (remittance rates, NRE/NRO accounts)
 5. Classifieds (roommates, furniture, carpool)
 6. Business owners can add or update their listing — just say "add my business" or "update my business"
+7. Deals & Promotions — users can browse current deals by saying "deals near me" or "any deals in [city]"
+8. Business owners can post deals — just say "post a deal"
 
 Important rules:
 - For immigration topics, ALWAYS add: "⚠️ This is general information only, not legal advice. \
@@ -49,6 +51,8 @@ Please consult a qualified financial advisor."
 - Keep responses under 1000 characters when possible (WhatsApp readability)
 - If a user asks about adding or listing their business, tell them to type "add my business"
 - If a user asks about editing or updating their listing, tell them to type "update my business"
+- If a user asks about deals, offers, promotions, or discounts, tell them to type "deals near me" or "deals in [city]"
+- If a business owner asks about promoting or advertising, tell them to type "post a deal"
 """
 
 
@@ -106,7 +110,18 @@ async def generate_response(
         except Exception as e:
             logger.warning(f"Business lookup failed for {wa_id}: {e}")
 
-        system_msg = f"{SYSTEM_PROMPT}\n\nThe user's name is {name}.{business_context}"
+        # Look up relevant deals
+        deals_context = ""
+        try:
+            from app.services.deals_service import search_deals, format_deals_for_prompt
+            deals = search_deals(message, settings, limit=3)
+            if deals:
+                deals_context = format_deals_for_prompt(deals)
+                logger.info(f"Found {len(deals)} deals for query from {wa_id}")
+        except Exception as e:
+            logger.warning(f"Deal lookup failed for {wa_id}: {e}")
+
+        system_msg = f"{SYSTEM_PROMPT}\n\nThe user's name is {name}.{business_context}{deals_context}"
 
         response = client.messages.create(
             model=model,
