@@ -60,6 +60,35 @@ CATEGORY_MAP = {
     "cardiolog": "doctor",
     "eye doctor": "doctor",
     "ophthalmol": "doctor",
+    # Round 5 new categories
+    "insurance": "insurance",
+    "insurance agent": "insurance",
+    "life insurance": "insurance",
+    "health insurance": "insurance",
+    "auto insurance": "insurance",
+    "salon": "salon",
+    "beauty": "salon",
+    "parlor": "salon",
+    "parlour": "salon",
+    "threading": "salon",
+    "bridal": "salon",
+    "mehndi": "salon",
+    "henna": "salon",
+    "jeweler": "jeweler",
+    "jeweller": "jeweler",
+    "jewelry": "jeweler",
+    "jewellery": "jeweler",
+    "gold": "jeweler",
+    "diamond": "jeweler",
+    "necklace": "jeweler",
+    "bangles": "jeweler",
+    "banquet": "banquet",
+    "banquet hall": "banquet",
+    "event venue": "banquet",
+    "wedding venue": "banquet",
+    "party hall": "banquet",
+    "reception hall": "banquet",
+    "wedding hall": "banquet",
 }
 
 # US state abbreviation lookup
@@ -127,6 +156,13 @@ CITY_STATE_HINTS = {
     "doraville": "GA", "grand prairie": "TX", "stafford": "TX",
     "lanham": "MD", "maple grove": "MN", "englewood": "CO",
     "cranston": "RI", "hockessin": "DE",
+    # Round 5 additions
+    "missoula": "MT", "overland park": "KS", "conway": "AR",
+    "santa fe": "NM", "metairie": "LA", "columbia": "SC",
+    "hudson": "NH", "kapaa": "HI", "edina": "MN",
+    "bethesda": "MD", "arlington": "VA", "lexington": "MA",
+    "jackson heights": "NY", "chamblee": "GA", "fords": "NJ",
+    "scottsdale": "AZ", "artesia": "CA",
 }
 
 
