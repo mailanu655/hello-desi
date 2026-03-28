@@ -12,6 +12,7 @@ import logging
 
 import anthropic
 
+from app.services.business_service import search_businesses, format_businesses_for_prompt
 from app.utils.whatsapp_utils import process_text_for_whatsapp
 from config.settings import Settings
 
@@ -92,10 +93,22 @@ async def generate_response(
             model = "claude-sonnet-4-5-20241022"
             logger.info(f"Escalating to Sonnet for complex query from {wa_id}")
 
+        # Look up relevant businesses from our database
+        business_context = ""
+        try:
+            results = search_businesses(message, settings, limit=5)
+            if results:
+                business_context = format_businesses_for_prompt(results)
+                logger.info(f"Found {len(results)} businesses for query from {wa_id}")
+        except Exception as e:
+            logger.warning(f"Business lookup failed for {wa_id}: {e}")
+
+        system_msg = f"{SYSTEM_PROMPT}\n\nThe user's name is {name}.{business_context}"
+
         response = client.messages.create(
             model=model,
             max_tokens=1024,
-            system=f"{SYSTEM_PROMPT}\n\nThe user's name is {name}.",
+            system=system_msg,
             messages=messages,
         )
 
