@@ -86,7 +86,36 @@ async def handle_message(
 
         logger.info(f"Message from {name} ({wa_id}): {message_body[:50]}...")
 
-        # Generate AI response
+        # ── Check for business registration / update flow ────────
+        from app.services.business_registration import (
+            detect_registration_intent,
+            has_active_session,
+            handle_registration_message,
+            start_add_flow,
+            start_update_flow,
+        )
+
+        # If user already has an active registration session, handle it
+        if has_active_session(wa_id):
+            response_text = handle_registration_message(wa_id, message_body, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
+        # Check if this is a new registration intent
+        reg_intent = detect_registration_intent(message_body)
+        if reg_intent == "add":
+            response_text = start_add_flow(wa_id)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif reg_intent == "update":
+            response_text = start_update_flow(wa_id)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
+        # ── Normal AI response flow ──────────────────────────────
         from app.services.claude_service import generate_response
 
         response_text = await generate_response(
