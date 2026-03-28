@@ -118,6 +118,15 @@ CITY_STATE_HINTS = {
     "cleveland": "OH", "cincinnati": "OH",
     "arvada": "CO", "aurora": "CO",
     "tempe": "AZ", "chandler": "AZ", "mesa": "AZ",
+    # Round 4 additions
+    "louisville": "KY", "omaha": "NE", "wichita": "KS", "shawnee": "KS",
+    "little rock": "AR", "albuquerque": "NM", "providence": "RI",
+    "wilmington": "DE", "burlington": "VT", "anchorage": "AK",
+    "bozeman": "MT", "fargo": "ND", "sioux falls": "SD", "cheyenne": "WY",
+    "montclair": "NJ", "south plainfield": "NJ", "norcross": "GA",
+    "doraville": "GA", "grand prairie": "TX", "stafford": "TX",
+    "lanham": "MD", "maple grove": "MN", "englewood": "CO",
+    "cranston": "RI", "hockessin": "DE",
 }
 
 
