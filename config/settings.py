@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # --- Open Exchange Rates ---
     OPEN_EXCHANGE_RATES_APP_ID: str = ""
 
+    # --- Stripe Payment Links ---
+    STRIPE_FEATURED_LINK: str = ""
+    STRIPE_PREMIUM_LINK: str = ""
+
     # --- App Config ---
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"

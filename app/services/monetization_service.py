@@ -323,18 +323,36 @@ def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
                 "Want to upgrade again anytime? Just say *'feature my business'*."
             )
 
-        # For paid plans, send payment instructions
-        return (
+        # For paid plans, send payment instructions with Stripe link
+        stripe_links = {
+            "featured": settings.STRIPE_FEATURED_LINK,
+            "premium": settings.STRIPE_PREMIUM_LINK,
+        }
+        payment_link = stripe_links.get(chosen, "")
+
+        msg = (
             f"Your *{p['label']}* plan is now active! 🎉🚀\n\n"
             f"*{b['name']}* now has:\n"
             f"⭐ Featured badge in search results\n"
             f"🏷️ Up to {p['deals_per_month']} deals/month\n"
             f"📊 Business analytics (type *'my stats'*)\n\n"
-            f"💳 To complete payment ({p['price']}), please use this link:\n"
-            f"https://hello-desi.onrender.com/pay/{chosen}\n\n"
+        )
+
+        if payment_link:
+            msg += (
+                f"💳 Complete payment ({p['price']}):\n"
+                f"{payment_link}\n\n"
+            )
+        else:
+            msg += (
+                f"💳 Payment ({p['price']}) — we'll send you a payment link shortly.\n\n"
+            )
+
+        msg += (
             "Your featured status is active immediately!\n"
             "Thank you for supporting Hello Desi! 🙏"
         )
+        return msg
 
     except Exception as e:
         logger.error(f"Failed to activate plan: {e}")
@@ -392,8 +410,91 @@ def log_inquiry(
         if rows:
             client.table("inquiry_logs").insert(rows).execute()
             logger.info(f"Logged {len(rows)} inquiries for user {user_wa_id}")
+
+        # ── Instant lead notifications to business owners ──
+        _notify_business_owners(businesses, message_snippet, settings)
+
     except Exception as e:
         logger.warning(f"Failed to log inquiries: {e}")
+
+
+def _notify_business_owners(
+    businesses: list[dict],
+    search_query: str,
+    settings: Settings,
+) -> None:
+    """
+    Send instant WhatsApp notification to business owners when someone
+    searches for their business. This is the dopamine hit that drives upgrades.
+
+    Only notifies businesses that have a source_id (owner's wa_id).
+    Rate-limited: max 1 notification per business per hour to avoid spam.
+    """
+    import asyncio
+
+    for b in businesses:
+        try:
+            source_id = (b.get("source_id") or "").strip()
+            if not source_id:
+                continue  # No owner linked
+
+            owner_wa_id = source_id.replace("wa:", "").strip()
+            if not owner_wa_id:
+                continue
+
+            biz_name = b.get("name", "your business")
+            city = b.get("city", "")
+            is_featured = b.get("is_featured", False)
+
+            # Rate limit: check last notification time (simple in-memory)
+            cache_key = f"notif:{b.get('id', '')}"
+            now = time.time()
+            last_sent = _notification_cache.get(cache_key, 0)
+            if now - last_sent < 3600:  # 1 hour cooldown
+                continue
+
+            _notification_cache[cache_key] = now
+
+            # Build notification message
+            query_preview = search_query[:60] if search_query else "a local service"
+            msg = (
+                f"🔔 *New customer interest!*\n\n"
+                f"Someone just searched for:\n"
+                f"👉 _{query_preview}_\n\n"
+                f"Your business *{biz_name}*"
+            )
+            if city:
+                msg += f" in {city}"
+            msg += " was shown in results!\n"
+
+            if not is_featured:
+                msg += (
+                    "\n⭐ *Featured businesses appear first* and get 3x more views.\n"
+                    "Type *\"feature my business\"* to upgrade."
+                )
+            else:
+                msg += "\n✅ Your Featured badge helped you appear first!"
+
+            # Send async notification (fire-and-forget)
+            from app.services.whatsapp_service import WhatsAppService
+            whatsapp = WhatsAppService(settings)
+
+            # Use asyncio to send without blocking
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(whatsapp.send_text_message(owner_wa_id, msg))
+            except RuntimeError:
+                # No running loop — skip (will happen in sync contexts)
+                pass
+
+            logger.info(f"Lead notification sent: {biz_name} → {owner_wa_id}")
+
+        except Exception as e:
+            logger.warning(f"Lead notification failed for {b.get('name', '?')}: {e}")
+
+
+# In-memory rate limiter for lead notifications (1 per business per hour)
+_notification_cache: dict[str, float] = {}
 
 
 # ── Business stats (for owners) ─────────────────────────────────

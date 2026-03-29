@@ -73,3 +73,53 @@ async def send_daily_digest(
     summary = await send_daily_digest(settings)
     logger.info(f"Digest run complete: {summary}")
     return {"status": "ok", "summary": summary}
+
+
+@router.get("/tasks/analytics", dependencies=[Depends(verify_cron_secret)])
+async def get_analytics(
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Quick analytics dashboard — call this to see how the platform is doing.
+    Returns: total businesses, inquiries (today/week/all), subscriptions,
+    digest subscribers, deals, and top searched businesses.
+    """
+    from datetime import datetime, timedelta, timezone
+    from supabase import create_client
+
+    client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+
+    # Counts
+    biz = client.table("businesses").select("id", count="exact").execute()
+    inq_all = client.table("inquiry_logs").select("id", count="exact").execute()
+    inq_today = client.table("inquiry_logs").select("id", count="exact").gte("created_at", today).execute()
+    inq_week = client.table("inquiry_logs").select("id", count="exact").gte("created_at", week_ago).execute()
+    subs = client.table("subscriptions").select("id", count="exact").eq("status", "active").execute()
+    digest = client.table("digest_subscribers").select("id", count="exact").eq("status", "active").execute()
+    deals = client.table("deals").select("id", count="exact").execute()
+
+    # Top 5 most-searched businesses this week
+    top_biz_query = client.table("inquiry_logs").select("business_name").gte("created_at", week_ago).execute()
+    biz_counts: dict[str, int] = {}
+    for row in (top_biz_query.data or []):
+        name = row.get("business_name", "Unknown")
+        biz_counts[name] = biz_counts.get(name, 0) + 1
+    top_5 = sorted(biz_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return {
+        "status": "ok",
+        "timestamp": now.isoformat(),
+        "businesses": biz.count or 0,
+        "inquiries": {
+            "today": inq_today.count or 0,
+            "this_week": inq_week.count or 0,
+            "all_time": inq_all.count or 0,
+        },
+        "active_subscriptions": subs.count or 0,
+        "digest_subscribers": digest.count or 0,
+        "active_deals": deals.count or 0,
+        "top_businesses_this_week": [{"name": n, "inquiries": c} for n, c in top_5],
+    }

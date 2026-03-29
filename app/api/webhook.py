@@ -19,6 +19,10 @@ from config.settings import Settings, get_settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# In-memory set of users who have sent at least one message this session.
+# Used for first-time onboarding detection. Resets on server restart.
+_seen_users: set[str] = set()
+
 
 @router.get("/webhook")
 async def verify_webhook(
@@ -85,6 +89,32 @@ async def handle_message(
         message_body = message_data["message_body"]
 
         logger.info(f"Message from {name} ({wa_id}): {message_body[:50]}...")
+
+        # ── First-time user onboarding ─────────────────────────
+        if wa_id not in _seen_users:
+            _seen_users.add(wa_id)
+            # Check if this is likely their very first message (simple heuristic)
+            msg_lower = message_body.lower().strip()
+            greetings = ["hi", "hello", "hey", "hola", "namaste", "start", "help"]
+            if msg_lower in greetings or len(msg_lower) < 5:
+                welcome = (
+                    f"Hey {name}! Welcome to *Hello Desi* 🇮🇳\n\n"
+                    "I'm your AI assistant for the Indian community in the USA.\n\n"
+                    "I can help you find:\n"
+                    "🍛 Indian restaurants & groceries\n"
+                    "👨‍⚕️ Doctors, lawyers & CPAs\n"
+                    "🛕 Temples & community events\n"
+                    "💰 Deals & promotions\n\n"
+                    "Try asking me:\n"
+                    "👉 _\"Indian restaurants in Dallas\"_\n"
+                    "👉 _\"deals near me\"_\n"
+                    "👉 _\"find a CPA in Houston\"_\n\n"
+                    "🏪 Own a business? Type *\"add my business\"* to get listed FREE!\n\n"
+                    "📰 Want daily updates? Type *\"daily digest in [your city]\"*"
+                )
+                whatsapp = WhatsAppService(settings)
+                await whatsapp.send_text_message(wa_id, welcome)
+                return {"status": "ok"}
 
         # ── Check for business registration / update flow ────────
         from app.services.business_registration import (
