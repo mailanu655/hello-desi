@@ -92,30 +92,32 @@ def build_proof_message(
         if last_week > 0:
             diff = this_week - last_week
             if diff > 0:
-                trend = f"📈 That's {diff} more than last week!"
+                trend = f"📈 {diff} more than last week"
             elif diff < 0:
-                trend = f"📉 Down {abs(diff)} from last week."
+                trend = f"📉 Down {abs(diff)} from last week"
             else:
-                trend = "📊 Same as last week — holding steady."
+                trend = "Holding steady"
         else:
-            trend = "🚀 Great start — your first week with inquiries!"
+            trend = "Your first week with inquiries!"
 
         msg = (
-            f"📊 *Weekly Report — {name}*\n\n"
-            f"🔥 *{this_week} people* asked about your business this week!\n"
-            f"{trend}\n"
+            f"Hi! This is Mira 👋\n\n"
+            f"This week for *{name}*:\n"
+            f"• *{this_week} people* searched for your category\n"
+            f"• Your business appeared in results\n"
+            f"• {trend}\n"
         )
 
         if not is_featured:
             msg += (
-                "\n⭐ *Featured businesses get 3x more visibility.*\n"
-                "Type *\"feature my business\"* to upgrade and appear first in search results.\n"
-                "\n💡 _Your first 10 leads are free — see the value before you pay._"
+                "\n👉 Upgrade to be featured and get more leads\n"
+                "Plans start at $15/month\n"
+                "Reply *\"upgrade\"* to activate"
             )
         else:
             msg += (
-                "\n✅ Your Featured badge is driving results!\n"
-                "Type *\"my stats\"* for detailed analytics."
+                "\n✅ Your Featured badge is working!\n"
+                "Type *\"my stats\"* for details"
             )
 
         return msg
@@ -123,41 +125,38 @@ def build_proof_message(
     # ── No inquiries this week, but had some before ──
     if last_week > 0:
         msg = (
-            f"📊 *Weekly Report — {name}*\n\n"
-            f"📉 No new inquiries this week (had {last_week} last week).\n\n"
-            "This can happen — sometimes users search in waves.\n"
+            f"Hi! This is Mira 👋\n\n"
+            f"Quiet week for *{name}* — no new inquiries\n"
+            f"(Had {last_week} last week)\n\n"
+            "This happens — searches come in waves.\n"
         )
 
         if not is_featured:
             msg += (
-                "\n⭐ *Featured businesses stay visible even in slow weeks.*\n"
-                "Type *\"feature my business\"* to boost your listing."
+                "\n👉 Featured businesses stay visible in slow weeks\n"
+                "Reply *\"upgrade\"* to boost your listing"
             )
         else:
-            msg += "\nYour Featured badge is still active — hang tight! 💪"
+            msg += "\nYour Featured badge is still active 💪"
 
         return msg
 
     # ── Brand new / zero activity ──
-    msg = (
-        f"📊 *Weekly Report — {name}*\n\n"
-        f"👋 Welcome to Mira! Your business is listed"
-    )
+    msg = f"Hi! This is Mira 👋\n\n"
+    msg += f"Your business *{name}* is listed"
     if city:
-        msg += f" in *{city}*"
+        msg += f" in {city}"
     msg += ".\n\n"
     msg += (
-        "No inquiries yet — that's normal for new listings.\n"
-        "Here's how to get noticed:\n"
-        "• Make sure your phone number is correct\n"
-        "• Add a deal — type *\"post a deal\"*\n"
-        "• Share Mira with friends in your community\n"
+        "No inquiries yet — that's normal for new listings.\n\n"
+        "Quick tips:\n"
+        "• Check your phone number is correct\n"
+        "• Post a deal — type *\"post a deal\"*\n"
+        "• Share Mira with your community 🙌\n"
     )
 
     if not is_featured:
-        msg += (
-            "\n⭐ Want to jump the queue? Type *\"feature my business\"*"
-        )
+        msg += "\n👉 Want to appear first? Reply *\"upgrade\"*"
 
     return msg
 

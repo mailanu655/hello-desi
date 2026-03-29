@@ -98,17 +98,16 @@ async def handle_message(
             greetings = ["hi", "hello", "hey", "hola", "namaste", "start", "help"]
             if msg_lower in greetings or len(msg_lower) < 5:
                 welcome = (
-                    f"Hey {name}! Welcome to *Mira* 🇮🇳\n\n"
-                    "I'm your AI assistant for the Indian community in the USA.\n\n"
+                    f"Hi {name}! I'm Mira 😊\n\n"
                     "I can help you find:\n"
-                    "🍛 Indian restaurants & groceries\n"
-                    "👨‍⚕️ Doctors, lawyers & CPAs\n"
-                    "🛕 Temples & community events\n"
-                    "💰 Deals & promotions\n\n"
-                    "Try asking me:\n"
-                    "👉 _\"Indian restaurants in Dallas\"_\n"
-                    "👉 _\"deals near me\"_\n"
-                    "👉 _\"find a CPA in Houston\"_\n\n"
+                    "🛒 Indian groceries\n"
+                    "🍛 Food & tiffins\n"
+                    "👶 Babysitters\n"
+                    "💸 Deals & services\n\n"
+                    "Try asking:\n"
+                    "👉 _\"Indian grocery near me\"_\n"
+                    "👉 _\"babysitter in Columbus\"_\n"
+                    "👉 _\"deals near me\"_\n\n"
                     "🏪 Own a business? Type *\"add my business\"* to get listed FREE!\n\n"
                     "📰 Want daily updates? Type *\"daily digest in [your city]\"*"
                 )

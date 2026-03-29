@@ -341,11 +341,11 @@ def _insert_deal(session: DealSession, settings: Settings) -> str:
         del _deal_sessions[session.wa_id]
         logger.info(f"Deal posted by {session.wa_id}: {d['title']} for {b['name']}")
         return (
-            "Your deal is live on Mira! 🎉🔥\n\n"
+            f"Your deal is live! 🎉\n\n"
             f"*{d['title']}* — {b['name']}\n"
-            f"Expires in {d['duration_label']}.\n\n"
-            "Users searching in your area will see this deal.\n"
-            "Want to post another? Say *'post a deal'*."
+            f"Expires in {d['duration_label']}\n\n"
+            "People in your area will see this 👍\n"
+            "Want to post another? Say *\"post a deal\"*"
         )
     except Exception as e:
         logger.error(f"Failed to insert deal for {session.wa_id}: {e}")

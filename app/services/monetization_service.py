@@ -128,9 +128,8 @@ def start_upgrade_flow(wa_id: str) -> str:
         step=UpgradeStep.BUSINESS_LOOKUP,
     )
     return (
-        "Let's upgrade your business listing! 🚀\n\n"
-        "Tell me your *business name* or *phone number* "
-        "so I can find your listing."
+        "Got you 👍 Let's get you upgraded!\n\n"
+        "What's your *business name* or *phone number*?"
     )
 
 
@@ -162,7 +161,7 @@ def handle_upgrade_message(wa_id: str, message: str, settings: Settings) -> str:
     msg = message.strip()
     if msg.lower() in ("cancel", "stop", "quit", "exit", "nevermind"):
         del _upgrade_sessions[wa_id]
-        return "Upgrade cancelled. Let me know if you need anything! 🙏"
+        return "No worries, cancelled 👍"
 
     session.updated_at = time.time()
     return _handle_upgrade_step(session, msg, settings)
@@ -264,20 +263,19 @@ def _upgrade_choose_plan(session: UpgradeSession, msg: str, settings: Settings) 
                 session.data["chosen_plan"] = "free"
                 session.step = UpgradeStep.CONFIRM
                 return (
-                    "You want to switch to the *Free* plan.\n"
-                    "This will remove your Featured badge and limit you to 1 deal/month.\n\n"
+                    "Switch to *Free* plan?\n"
+                    "You'll lose your Featured badge + limited to 1 deal/month.\n\n"
                     "Reply *yes* to confirm or *no* to cancel."
                 )
             session.data["chosen_plan"] = chosen
             session.step = UpgradeStep.CONFIRM
             p = PLANS[chosen]
             return (
-                f"Great choice! Here's what you'll get with *{p['label']}* ({p['price']}):\n\n"
-                f"⭐ Featured badge — appear first in search\n"
-                f"🏷️ {p['deals_per_month']} deals per month\n"
-                f"📊 Business analytics & inquiry stats\n\n"
-                "Reply *yes* to activate or *no* to cancel.\n"
-                "(Payment link will be sent after confirmation)"
+                f"*{p['label']}* — {p['price']}\n\n"
+                f"⭐ Appear first in search\n"
+                f"🏷️ {p['deals_per_month']} deals/month\n"
+                f"📊 Analytics & inquiry stats\n\n"
+                "Reply *yes* to activate or *no* to cancel."
             )
     except (ValueError, IndexError):
         pass
@@ -331,27 +329,23 @@ def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
         payment_link = stripe_links.get(chosen, "")
 
         msg = (
-            f"Your *{p['label']}* plan is now active! 🎉🚀\n\n"
-            f"*{b['name']}* now has:\n"
-            f"⭐ Featured badge in search results\n"
-            f"🏷️ Up to {p['deals_per_month']} deals/month\n"
-            f"📊 Business analytics (type *'my stats'*)\n\n"
+            f"*{b['name']}* is now *{p['label']}*! 🎉\n\n"
+            f"⭐ Featured in search\n"
+            f"🏷️ {p['deals_per_month']} deals/month\n"
+            f"📊 Type *'my stats'* for analytics\n\n"
         )
 
         if payment_link:
             msg += (
                 f"💳 Complete payment ({p['price']}):\n"
-                f"{payment_link}\n\n"
+                f"{payment_link}\n"
             )
         else:
             msg += (
-                f"💳 Payment ({p['price']}) — we'll send you a payment link shortly.\n\n"
+                f"💳 Payment link ({p['price']}) coming shortly\n"
             )
 
-        msg += (
-            "Your featured status is active immediately!\n"
-            "Thank you for supporting Mira! 🙏"
-        )
+        msg += "\nYou're live immediately 👍"
         return msg
 
     except Exception as e:
@@ -455,22 +449,22 @@ def _notify_business_owners(
 
             _notification_cache[cache_key] = now
 
-            # Build notification message
+            # Build notification message — Mira voice
             query_preview = search_query[:60] if search_query else "a local service"
             msg = (
                 f"🔔 *New customer interest!*\n\n"
-                f"Someone just searched for:\n"
+                f"Someone searched for:\n"
                 f"👉 _{query_preview}_\n\n"
-                f"Your business *{biz_name}*"
+                f"Your business *{biz_name}* was shown"
             )
             if city:
                 msg += f" in {city}"
-            msg += " was shown in results!\n"
+            msg += " 👍\n"
 
             if not is_featured:
                 msg += (
-                    "\n⭐ *Featured businesses appear first* and get 3x more views.\n"
-                    "Type *\"feature my business\"* to upgrade."
+                    "\n👉 Upgrade to appear first\n"
+                    "Reply *\"upgrade\"* to activate"
                 )
             else:
                 msg += "\n✅ Your Featured badge helped you appear first!"
@@ -539,8 +533,7 @@ def get_business_stats(wa_id: str, settings: Settings) -> str:
 
         if any(not b.get("is_featured") for b in biz_result.data):
             lines.append(
-                "Want more visibility? Upgrade to Featured!\n"
-                "Type *'feature my business'* to get ⭐ priority placement."
+                "👉 Want more leads? Reply *\"upgrade\"* for Featured placement"
             )
 
         return "\n".join(lines)
@@ -565,8 +558,7 @@ def get_plan_status(wa_id: str, settings: Settings) -> str:
         if not result.data:
             return (
                 "You're on the *Free* plan.\n\n"
-                "Upgrade to get featured placement, more deals, and analytics!\n"
-                "Type *'feature my business'* to see plans."
+                "👉 Reply *\"upgrade\"* to get featured + analytics"
             )
 
         lines = ["📋 *Your Subscription*\n"]

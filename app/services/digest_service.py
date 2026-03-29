@@ -230,62 +230,59 @@ def _get_total_business_count(city: str, settings: Settings) -> int:
 
 
 def build_digest_message(city: str, settings: Settings) -> str:
-    """Build the daily digest message for a city."""
+    """Build the daily digest message for a city — Mira brand voice."""
     now = datetime.now(timezone.utc)
-    day_name = now.strftime("%a, %b %d")
 
     new_biz = _get_new_businesses(city, settings)
     deals = _get_active_deals(city, settings)
     featured = _get_featured_businesses(city, settings)
     total_count = _get_total_business_count(city, settings)
 
-    # ── Header ──
-    msg = f"🌅 *Good Morning, {city} Desis!* — {day_name}\n\n"
+    # ── Header — clean Mira style ──
+    msg = f"🌆 *{city} with Mira*\n\n"
 
-    # ── New Businesses ──
+    # ── Grocery / New Businesses ──
     if new_biz:
-        msg += "🏪 *New This Week*\n"
+        msg += "🛒 *New This Week*\n"
         for b in new_biz[:3]:
             cat = b.get("category", "")
-            cat_str = f" ({cat})" if cat else ""
+            cat_str = f" — {cat}" if cat else ""
             msg += f"• {b['name']}{cat_str}\n"
         if len(new_biz) > 3:
             extra = len(new_biz) - 3
-            msg += f"• +{extra} more new listings\n"
+            msg += f"• +{extra} more listings\n"
         msg += "\n"
-    else:
-        msg += f"🏪 *{total_count} businesses* listed in {city}\n"
-        msg += "Know a local desi business? Tell them about Mira!\n\n"
+    elif total_count > 0:
+        msg += f"🛒 *{total_count} businesses* in {city}\n"
+        msg += "Know a local desi business? Share Mira with them 🙌\n\n"
 
-    # ── Top Deal ──
+    # ── Deals ──
     if deals:
-        d = deals[0]
-        msg += "🔥 *Top Deal*\n"
-        msg += f"{d.get('business_name', 'Local Business')}: {d.get('title', '')}\n"
-        if d.get("expires_at"):
-            try:
-                exp = datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00"))
-                days_left = (exp - now).days
-                if days_left <= 2:
-                    msg += f"⏰ Expires soon!\n"
-            except Exception:
-                pass
-        if len(deals) > 1:
-            msg += f"+ {len(deals) - 1} more deals — ask me about *deals in {city}*\n"
+        msg += "💸 *Deals*\n"
+        for d in deals[:2]:
+            biz_name = d.get("business_name", "Local Business")
+            title = d.get("title", "")
+            msg += f"• {biz_name}: {title}\n"
+            if d.get("expires_at"):
+                try:
+                    exp = datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00"))
+                    if (exp - now).days <= 2:
+                        msg += "  ⏰ Expires soon!\n"
+                except Exception:
+                    pass
         msg += "\n"
 
     # ── Sponsored Slot (Featured businesses) ──
     if featured:
-        msg += "⭐ *Sponsored*\n"
-        for f_biz in featured[:1]:  # One sponsor per digest
-            phone = f_biz.get("phone", "")
-            phone_str = f" — {phone}" if phone else ""
-            msg += f"{f_biz['name']}{phone_str}\n"
-        msg += "\n"
+        f_biz = featured[0]
+        phone = f_biz.get("phone", "")
+        cat = f_biz.get("category", "")
+        phone_str = f" — {phone}" if phone else ""
+        cat_str = f" ({cat})" if cat else ""
+        msg += f"⭐ {f_biz['name']}{cat_str}{phone_str}\n\n"
 
-    # ── Footer ──
-    msg += "────────────\n"
-    msg += "Ask me anything! Just type your question.\n"
+    # ── Footer — conversational Mira ──
+    msg += "👉 Reply *1* for deals | *2* for services\n"
     msg += "Reply *stop digest* to unsubscribe"
 
     return msg
