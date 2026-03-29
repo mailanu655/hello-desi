@@ -1,5 +1,5 @@
 """
-Hello Desi — Intent Router
+Mira — Intent Router
 
 Classifies incoming messages into intents for routing to the correct module.
 Uses keyword matching first (free, instant), falls back to Claude for ambiguous messages.

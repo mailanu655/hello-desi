@@ -1,5 +1,5 @@
 """
-Hello Desi — Business Registration & Update Service
+Mira — Business Registration & Update Service
 
 Handles multi-step WhatsApp conversations for:
   1. Adding a new business listing
@@ -139,7 +139,7 @@ def start_add_flow(wa_id: str) -> str:
         step=AddStep.NAME,
     )
     return (
-        "Great, let's add your business to Hello Desi! 🎉\n\n"
+        "Great, let's add your business to Mira! 🎉\n\n"
         "I'll ask you a few quick questions.\n\n"
         "What is your *business name*?"
     )
@@ -337,7 +337,7 @@ def _insert_business(session: RegistrationSession, settings: Settings) -> str:
         del _sessions[session.wa_id]
         logger.info(f"Business added by {session.wa_id}: {d['name']} in {d['city']}, {d['state']}")
         return (
-            "Your business has been added to Hello Desi! 🎉🙏\n\n"
+            "Your business has been added to Mira! 🎉🙏\n\n"
             f"*{d['name']}* is now listed and users can find it when they search.\n\n"
             "Want to make changes later? Just say *'update my business'*."
         )

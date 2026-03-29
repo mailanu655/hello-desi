@@ -1,5 +1,5 @@
 """
-Hello Desi — Shared FastAPI Dependencies
+Mira — Shared FastAPI Dependencies
 
 Includes webhook signature verification (ported from Flask decorator pattern).
 """

@@ -1,5 +1,5 @@
 """
-Hello Desi — Daily Metro Digest Service
+Mira — Daily Metro Digest Service
 
 An opt-in daily WhatsApp newsletter that delivers curated content
 to users in their metro area. This is NOT optional — it's a core
@@ -255,7 +255,7 @@ def build_digest_message(city: str, settings: Settings) -> str:
         msg += "\n"
     else:
         msg += f"🏪 *{total_count} businesses* listed in {city}\n"
-        msg += "Know a local desi business? Tell them about Hello Desi!\n\n"
+        msg += "Know a local desi business? Tell them about Mira!\n\n"
 
     # ── Top Deal ──
     if deals:

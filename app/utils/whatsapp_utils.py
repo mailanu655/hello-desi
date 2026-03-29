@@ -1,5 +1,5 @@
 """
-Hello Desi — WhatsApp Utility Functions
+Mira — WhatsApp Utility Functions
 
 Ported from: python-whatsapp-bot-main/app/utils/whatsapp_utils.py
 

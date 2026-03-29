@@ -1,5 +1,5 @@
 """
-Hello Desi — Deals & Promotions Service
+Mira — Deals & Promotions Service
 
 Handles:
   1. Business owners posting deals via WhatsApp conversation
@@ -341,7 +341,7 @@ def _insert_deal(session: DealSession, settings: Settings) -> str:
         del _deal_sessions[session.wa_id]
         logger.info(f"Deal posted by {session.wa_id}: {d['title']} for {b['name']}")
         return (
-            "Your deal is live on Hello Desi! 🎉🔥\n\n"
+            "Your deal is live on Mira! 🎉🔥\n\n"
             f"*{d['title']}* — {b['name']}\n"
             f"Expires in {d['duration_label']}.\n\n"
             "Users searching in your area will see this deal.\n"

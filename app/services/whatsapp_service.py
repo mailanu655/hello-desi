@@ -1,5 +1,5 @@
 """
-Hello Desi — WhatsApp Message Sending Service
+Mira — WhatsApp Message Sending Service
 
 Ported from: python-whatsapp-bot-main/app/utils/whatsapp_utils.py → send_message()
 

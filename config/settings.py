@@ -1,5 +1,5 @@
 """
-Hello Desi — Application Settings
+Mira — Application Settings
 
 Type-safe configuration via Pydantic BaseSettings.
 Loads from .env file and environment variables.

@@ -1,5 +1,5 @@
 """
-Hello Desi — WhatsApp Webhook Endpoints
+Mira — WhatsApp Webhook Endpoints
 
 Ported from Flask reference (python-whatsapp-bot-main/app/views.py) to FastAPI.
 
@@ -98,7 +98,7 @@ async def handle_message(
             greetings = ["hi", "hello", "hey", "hola", "namaste", "start", "help"]
             if msg_lower in greetings or len(msg_lower) < 5:
                 welcome = (
-                    f"Hey {name}! Welcome to *Hello Desi* 🇮🇳\n\n"
+                    f"Hey {name}! Welcome to *Mira* 🇮🇳\n\n"
                     "I'm your AI assistant for the Indian community in the USA.\n\n"
                     "I can help you find:\n"
                     "🍛 Indian restaurants & groceries\n"

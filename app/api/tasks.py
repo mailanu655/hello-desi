@@ -1,5 +1,5 @@
 """
-Hello Desi — Scheduled Task Endpoints
+Mira — Scheduled Task Endpoints
 
 These endpoints are called by cron jobs (Render Cron, external scheduler,
 or manual curl) to run periodic tasks.

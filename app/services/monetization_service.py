@@ -1,5 +1,5 @@
 """
-Hello Desi — Monetization Service
+Mira — Monetization Service
 
 Handles:
   1. Featured Listings — upgrade/downgrade, Stripe payment link generation
@@ -350,7 +350,7 @@ def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
 
         msg += (
             "Your featured status is active immediately!\n"
-            "Thank you for supporting Hello Desi! 🙏"
+            "Thank you for supporting Mira! 🙏"
         )
         return msg
 

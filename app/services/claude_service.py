@@ -1,5 +1,5 @@
 """
-Hello Desi — Claude AI Integration Service
+Mira — Claude AI Integration Service
 
 Replaces: python-whatsapp-bot-main/app/services/openai_service.py
 
@@ -18,8 +18,8 @@ from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# Hello Desi system prompt — the bot's personality and rules
-SYSTEM_PROMPT = """You are Hello Desi, an AI-powered WhatsApp assistant for the Indian diaspora \
+# Mira system prompt — the bot's personality and rules
+SYSTEM_PROMPT = """You are Mira, an AI-powered WhatsApp assistant for the Indian diaspora \
 in the USA. You are like a knowledgeable desi friend who helps with everyday needs.
 
 Your personality:

@@ -1,5 +1,5 @@
 """
-Hello Desi — Weekly Proof Message Service
+Mira — Weekly Proof Message Service
 
 Sends business owners a WhatsApp message showing how many people
 asked about their business in the past week. This is the single
@@ -141,7 +141,7 @@ def build_proof_message(
     # ── Brand new / zero activity ──
     msg = (
         f"📊 *Weekly Report — {name}*\n\n"
-        f"👋 Welcome to Hello Desi! Your business is listed"
+        f"👋 Welcome to Mira! Your business is listed"
     )
     if city:
         msg += f" in *{city}*"
@@ -151,7 +151,7 @@ def build_proof_message(
         "Here's how to get noticed:\n"
         "• Make sure your phone number is correct\n"
         "• Add a deal — type *\"post a deal\"*\n"
-        "• Share Hello Desi with friends in your community\n"
+        "• Share Mira with friends in your community\n"
     )
 
     if not is_featured:

@@ -1,5 +1,5 @@
 """
-Hello Desi — Business Lookup Service
+Mira — Business Lookup Service
 
 Queries the Supabase `businesses` table to find Indian restaurants,
 grocery stores, temples, doctors, and lawyers near a user's city.

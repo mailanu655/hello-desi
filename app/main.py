@@ -1,5 +1,5 @@
 """
-Hello Desi — FastAPI Application Entry Point
+Mira — FastAPI Application Entry Point
 
 Run with: uvicorn app.main:app --reload --port 8000
 """
@@ -14,11 +14,11 @@ from app.api.tasks import router as tasks_router
 
 
 def create_app() -> FastAPI:
-    """Application factory for Hello Desi."""
+    """Application factory for Mira."""
     configure_logging()
 
     application = FastAPI(
-        title="Hello Desi",
+        title="Mira",
         description="AI-powered WhatsApp agent for the Indian diaspora in the USA",
         version="0.1.0",
     )
@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
 
     @application.get("/health")
     async def health_check():
-        return {"status": "healthy", "service": "hello-desi"}
+        return {"status": "healthy", "service": "mira"}
 
     return application
 

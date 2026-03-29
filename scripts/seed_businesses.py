@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hello Desi — Seed Indian businesses from Google Maps Places API (legacy).
+Mira — Seed Indian businesses from Google Maps Places API (legacy).
 
 Uses the Text Search endpoint (maps.googleapis.com/maps/api/place/textsearch)
 which is more widely enabled on API keys than the new Places API.
@@ -220,7 +220,7 @@ def main():
     seen_ids = set()
 
     print("=" * 60)
-    print("Hello Desi — Indian Business Data Seeder (Legacy API)")
+    print("Mira — Indian Business Data Seeder (Legacy API)")
     print(f"Metros: {len(US_METROS)} | Search queries: {len(SEARCH_QUERIES)}")
     print("=" * 60)
     sys.stdout.flush()

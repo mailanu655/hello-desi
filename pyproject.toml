@@ -1,5 +1,5 @@
 [project]
-name = "hello-desi"
+name = "mira"
 version = "0.1.0"
 description = "AI-powered WhatsApp agent for the Indian diaspora in the USA"
 requires-python = ">=3.11"
