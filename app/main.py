@@ -57,7 +57,7 @@ async def lifespan(application: FastAPI):
     # Daily digest — 8:00 AM US/Eastern every day
     scheduler.add_job(
         _run_daily_digest,
-        CronTrigger(hour=8, minute=0, timezone="US/Eastern"),
+        CronTrigger(hour=8, minute=0, timezone="America/New_York"),
         id="daily_digest",
         name="Daily Metro Digest",
         replace_existing=True,
@@ -66,14 +66,14 @@ async def lifespan(application: FastAPI):
     # Weekly proof messages — Monday 10:00 AM US/Eastern
     scheduler.add_job(
         _run_weekly_proof_messages,
-        CronTrigger(day_of_week="mon", hour=10, minute=0, timezone="US/Eastern"),
+        CronTrigger(day_of_week="mon", hour=10, minute=0, timezone="America/New_York"),
         id="weekly_proof_messages",
         name="Weekly Proof Messages",
         replace_existing=True,
     )
 
     scheduler.start()
-    logger.info("⏰ APScheduler started — digest daily 8am EST, proof msgs Monday 10am EST")
+    logger.info("⏰ APScheduler started — digest daily 8am ET, proof msgs Monday 10am ET")
     yield
     scheduler.shutdown()
     logger.info("⏰ APScheduler shut down")
