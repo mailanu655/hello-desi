@@ -351,8 +351,11 @@ def _check_deal_limit(business_id: str, wa_id: str, settings: Settings) -> str |
             plan_label = {"free": "Free", "featured": "Featured", "premium": "Premium"}.get(plan, "Free")
             if plan == "free":
                 return (
-                    f"You've used your *{max_deals} deal/month* on the {plan_label} plan.\n\n"
-                    "\ud83d\udc49 Reply *\"upgrade\"* to post more deals!"
+                    "You've used your 1 free deal this month 👍\n\n"
+                    "Upgrade to post more and reach more customers:\n\n"
+                    "⭐ *Featured* – $15/month (5 deals)\n"
+                    "👑 *Premium* – $30/month (unlimited)\n\n"
+                    "Reply *\"upgrade\"* to continue 👉"
                 )
             return (
                 f"You've used all *{max_deals} deals/month* on the {plan_label} plan.\n\n"

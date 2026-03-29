@@ -92,7 +92,7 @@ async def handle_message(
             whatsapp = WhatsAppService(settings)
             await whatsapp.send_text_message(
                 wa_id,
-                "You've sent a lot of messages today! Let's pick this up tomorrow \ud83d\ude4f"
+                "You've reached today's limit 🙏\nCome back tomorrow or try again later!"
             )
             return {"status": "ok"}
 
