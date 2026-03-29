@@ -78,6 +78,50 @@ IMPORTANT RULES:
 """
 
 
+IMMIGRATION_KEYWORDS = [
+    "immigration", "visa", "h1b", "h-1b", "h1-b", "green card", "uscis",
+    "eb2", "eb-2", "eb3", "eb-3", "i-485", "i-140", "i-130", "i-765",
+    "ead", "ap ", "advance parole", "opt", "cpt", "perm", "labor cert",
+    "priority date", "visa bulletin", "rfe", "noid",
+]
+FINANCE_KEYWORDS = [
+    "nre", "nro", "tax", "investment", "remittance", "forex",
+    "financial", "capital gains", "401k", "ira", "fbar", "fatca",
+    "wire transfer", "exchange rate",
+]
+
+IMMIGRATION_DISCLAIMER = "\n\n\u26a0\ufe0f _General info only \u2014 please consult an immigration attorney._"
+FINANCE_DISCLAIMER = "\n\n\u26a0\ufe0f _General info only \u2014 please consult a financial advisor._"
+
+
+def _enforce_disclaimers(user_message: str, response: str) -> str:
+    """
+    Programmatically enforce disclaimers on immigration/finance responses.
+    If Claude already included a disclaimer, skip. Otherwise append one.
+    """
+    msg_lower = user_message.lower()
+    resp_lower = response.lower()
+
+    is_immigration = any(kw in msg_lower for kw in IMMIGRATION_KEYWORDS)
+    is_finance = any(kw in msg_lower for kw in FINANCE_KEYWORDS)
+
+    # Check if Claude already added a disclaimer
+    has_disclaimer = (
+        "consult" in resp_lower
+        or "not legal advice" in resp_lower
+        or "not financial advice" in resp_lower
+        or "general info only" in resp_lower
+        or "professional advice" in resp_lower
+    )
+
+    if is_immigration and not has_disclaimer:
+        response += IMMIGRATION_DISCLAIMER
+    elif is_finance and not has_disclaimer:
+        response += FINANCE_DISCLAIMER
+
+    return response
+
+
 async def generate_response(
     message: str,
     wa_id: str,
@@ -159,6 +203,12 @@ async def generate_response(
         )
 
         response_text = response.content[0].text
+
+        # ── Programmatic disclaimer enforcement ──
+        # Even if Claude's system prompt already instructs disclaimers,
+        # enforce them at the code level for immigration/finance topics.
+        response_text = _enforce_disclaimers(message, response_text)
+
         formatted = process_text_for_whatsapp(response_text)
 
         logger.info(

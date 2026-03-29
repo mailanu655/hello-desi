@@ -13,15 +13,12 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.deps import verify_webhook_signature
 from app.services.whatsapp_service import WhatsAppService
+from app.services.user_state_service import is_first_time_user, check_rate_limit
 from app.utils.whatsapp_utils import is_valid_whatsapp_message, extract_message_data
 from config.settings import Settings, get_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# In-memory set of users who have sent at least one message this session.
-# Used for first-time onboarding detection. Resets on server restart.
-_seen_users: set[str] = set()
 
 
 @router.get("/webhook")
@@ -90,10 +87,17 @@ async def handle_message(
 
         logger.info(f"Message from {name} ({wa_id}): {message_body[:50]}...")
 
-        # ── First-time user onboarding ─────────────────────────
-        if wa_id not in _seen_users:
-            _seen_users.add(wa_id)
-            # Check if this is likely their very first message (simple heuristic)
+        # ── Rate limiting (Supabase-backed) ─────────────────────
+        if not check_rate_limit(wa_id, settings):
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(
+                wa_id,
+                "You've sent a lot of messages today! Let's pick this up tomorrow \ud83d\ude4f"
+            )
+            return {"status": "ok"}
+
+        # ── First-time user onboarding (Supabase-backed) ────────
+        if is_first_time_user(wa_id, name, settings):
             msg_lower = message_body.lower().strip()
             greetings = ["hi", "hello", "hey", "hola", "namaste", "start", "help"]
             if msg_lower in greetings or len(msg_lower) < 5:

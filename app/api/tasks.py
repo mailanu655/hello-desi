@@ -109,10 +109,16 @@ async def get_analytics(
         biz_counts[name] = biz_counts.get(name, 0) + 1
     top_5 = sorted(biz_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
+    # New: user state + notification stats
+    users = client.table("user_state").select("wa_id", count="exact").execute()
+    notifs_sent = client.table("notification_log").select("id", count="exact").eq("status", "sent").execute()
+    notifs_failed = client.table("notification_log").select("id", count="exact").eq("status", "failed").execute()
+
     return {
         "status": "ok",
         "timestamp": now.isoformat(),
         "businesses": biz.count or 0,
+        "registered_users": users.count or 0,
         "inquiries": {
             "today": inq_today.count or 0,
             "this_week": inq_week.count or 0,
@@ -121,5 +127,9 @@ async def get_analytics(
         "active_subscriptions": subs.count or 0,
         "digest_subscribers": digest.count or 0,
         "active_deals": deals.count or 0,
+        "notifications": {
+            "sent": notifs_sent.count or 0,
+            "failed": notifs_failed.count or 0,
+        },
         "top_businesses_this_week": [{"name": n, "inquiries": c} for n, c in top_5],
     }

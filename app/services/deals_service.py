@@ -313,12 +313,70 @@ def _deal_confirmation(session: DealSession) -> str:
     )
 
 
+def _check_deal_limit(business_id: str, wa_id: str, settings: Settings) -> str | None:
+    """
+    Check if business has exceeded monthly deal limit based on subscription plan.
+    Returns None if within limits, or an error message string if exceeded.
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Get current plan
+        sub = (
+            client.table("subscriptions")
+            .select("plan")
+            .eq("business_id", business_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+        plan = sub.data[0]["plan"] if sub.data else "free"
+
+        # Plan limits
+        limits = {"free": 1, "featured": 5, "premium": 999}
+        max_deals = limits.get(plan, 1)
+
+        # Count deals posted this month
+        month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0).isoformat()
+        count = (
+            client.table("deals")
+            .select("id", count="exact")
+            .eq("business_id", business_id)
+            .gte("created_at", month_start)
+            .execute()
+        )
+        current = count.count if count.count else 0
+
+        if current >= max_deals:
+            plan_label = {"free": "Free", "featured": "Featured", "premium": "Premium"}.get(plan, "Free")
+            if plan == "free":
+                return (
+                    f"You've used your *{max_deals} deal/month* on the {plan_label} plan.\n\n"
+                    "\ud83d\udc49 Reply *\"upgrade\"* to post more deals!"
+                )
+            return (
+                f"You've used all *{max_deals} deals/month* on the {plan_label} plan.\n\n"
+                "Need more? Reply *\"upgrade\"* to see options."
+            )
+        return None
+
+    except Exception as e:
+        logger.warning(f"Deal limit check failed: {e}")
+        return None  # On failure, allow the deal
+
+
 def _insert_deal(session: DealSession, settings: Settings) -> str:
     """Insert the deal into Supabase."""
     d = session.data
     b = d["business"]
     now = datetime.now(timezone.utc)
     expires = now + d["duration_delta"]
+
+    # ── Enforce deal limits ──
+    limit_msg = _check_deal_limit(b["id"], session.wa_id, settings)
+    if limit_msg:
+        del _deal_sessions[session.wa_id]
+        return limit_msg
 
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)

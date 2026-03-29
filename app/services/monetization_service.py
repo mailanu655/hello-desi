@@ -426,25 +426,32 @@ def _notify_business_owners(
     """
     import asyncio
 
+    from app.services.user_state_service import log_notification
+
     for b in businesses:
         try:
             source_id = (b.get("source_id") or "").strip()
+            biz_id = b.get("id", "")
+            biz_name = b.get("name", "your business")
+
             if not source_id:
-                continue  # No owner linked
+                log_notification(biz_id, biz_name, "", search_query, "no_owner", settings=settings)
+                continue
 
             owner_wa_id = source_id.replace("wa:", "").strip()
             if not owner_wa_id:
+                log_notification(biz_id, biz_name, "", search_query, "no_owner", settings=settings)
                 continue
 
-            biz_name = b.get("name", "your business")
             city = b.get("city", "")
             is_featured = b.get("is_featured", False)
 
-            # Rate limit: check last notification time (simple in-memory)
-            cache_key = f"notif:{b.get('id', '')}"
+            # Rate limit: check last notification time (in-memory, 1 hour cooldown)
+            cache_key = f"notif:{biz_id}"
             now = time.time()
             last_sent = _notification_cache.get(cache_key, 0)
-            if now - last_sent < 3600:  # 1 hour cooldown
+            if now - last_sent < 3600:
+                log_notification(biz_id, biz_name, owner_wa_id, search_query, "rate_limited", settings=settings)
                 continue
 
             _notification_cache[cache_key] = now
@@ -452,39 +459,39 @@ def _notify_business_owners(
             # Build notification message — Mira voice
             query_preview = search_query[:60] if search_query else "a local service"
             msg = (
-                f"🔔 *New customer interest!*\n\n"
+                f"\ud83d\udd14 *New customer interest!*\n\n"
                 f"Someone searched for:\n"
-                f"👉 _{query_preview}_\n\n"
+                f"\ud83d\udc49 _{query_preview}_\n\n"
                 f"Your business *{biz_name}* was shown"
             )
             if city:
                 msg += f" in {city}"
-            msg += " 👍\n"
+            msg += " \ud83d\udc4d\n"
 
             if not is_featured:
                 msg += (
-                    "\n👉 Upgrade to appear first\n"
+                    "\n\ud83d\udc49 Upgrade to appear first\n"
                     "Reply *\"upgrade\"* to activate"
                 )
             else:
-                msg += "\n✅ Your Featured badge helped you appear first!"
+                msg += "\n\u2705 Your Featured badge helped you appear first!"
 
             # Send async notification (fire-and-forget)
             from app.services.whatsapp_service import WhatsAppService
             whatsapp = WhatsAppService(settings)
 
-            # Use asyncio to send without blocking
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(whatsapp.send_text_message(owner_wa_id, msg))
+                log_notification(biz_id, biz_name, owner_wa_id, search_query, "sent", settings=settings)
             except RuntimeError:
-                # No running loop — skip (will happen in sync contexts)
-                pass
+                log_notification(biz_id, biz_name, owner_wa_id, search_query, "failed", "no event loop", settings=settings)
 
-            logger.info(f"Lead notification sent: {biz_name} → {owner_wa_id}")
+            logger.info(f"Lead notification sent: {biz_name} \u2192 {owner_wa_id}")
 
         except Exception as e:
             logger.warning(f"Lead notification failed for {b.get('name', '?')}: {e}")
+            log_notification(b.get("id", ""), b.get("name", "?"), "", search_query, "failed", str(e), settings=settings)
 
 
 # In-memory rate limiter for lead notifications (1 per business per hour)
