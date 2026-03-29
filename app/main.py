@@ -10,6 +10,7 @@ import sys
 from fastapi import FastAPI
 
 from app.api.webhook import router as webhook_router
+from app.api.tasks import router as tasks_router
 
 
 def create_app() -> FastAPI:
@@ -24,6 +25,7 @@ def create_app() -> FastAPI:
 
     # Register routes
     application.include_router(webhook_router, prefix="/api/v1")
+    application.include_router(tasks_router, prefix="/api/v1")
 
     @application.get("/health")
     async def health_check():

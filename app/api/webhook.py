@@ -163,6 +163,72 @@ async def handle_message(
             await whatsapp.send_text_message(wa_id, response_text)
             return {"status": "ok"}
 
+        # ── Check for digest subscription ─────────────────────────
+        from app.services.digest_service import (
+            detect_digest_intent,
+            subscribe_to_digest,
+            unsubscribe_from_digest,
+        )
+
+        digest_intent = detect_digest_intent(message_body)
+        if digest_intent == "unsubscribe":
+            response_text = unsubscribe_from_digest(wa_id, settings)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif digest_intent == "subscribe":
+            # Extract city from message or ask for it
+            # Simple extraction: look for "in <city>" or "for <city>"
+            msg_lower = message_body.lower()
+            city = ""
+            for prep in ["in ", "for "]:
+                if prep in msg_lower:
+                    parts = msg_lower.split(prep, 1)
+                    if len(parts) > 1:
+                        city = parts[1].strip().rstrip(".")
+                        break
+            if not city:
+                # Try to find city from their business listing
+                try:
+                    from supabase import create_client
+                    client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+                    biz = (
+                        client.table("businesses")
+                        .select("city")
+                        .ilike("source_id", f"%{wa_id}%")
+                        .limit(1)
+                        .execute()
+                    )
+                    if biz.data:
+                        city = biz.data[0].get("city", "")
+                except Exception:
+                    pass
+
+            if not city:
+                response_text = (
+                    "I'd love to set up your daily digest! 🌅\n\n"
+                    "Which city are you in? Just say:\n"
+                    "*daily digest in Dallas*\n"
+                    "or\n"
+                    "*daily digest in Houston*"
+                )
+            else:
+                response_text = subscribe_to_digest(wa_id, city, settings)
+
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+
+        # ── Check for weekly report request ────────────────────────
+        report_phrases = ["my weekly report", "weekly report", "my report", "proof message"]
+        if message_body.lower().strip() in report_phrases:
+            from app.services.proof_message_service import send_proof_message_single
+            result = await send_proof_message_single(wa_id, settings)
+            if result:  # Only send if there's an error message
+                whatsapp = WhatsAppService(settings)
+                await whatsapp.send_text_message(wa_id, result)
+            return {"status": "ok"}
+
         # Check if this is a new monetization intent
         money_intent = detect_monetization_intent(message_body)
         if money_intent == "upgrade":

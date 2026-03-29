@@ -60,6 +60,9 @@ Monetization commands:
 - If a business owner asks about upgrading, featuring, or promoting their listing → tell them to type "feature my business"
 - If a business owner asks about their stats, analytics, views, or inquiries → tell them to type "my stats"
 - If a business owner asks about their plan or subscription → tell them to type "my plan"
+- If a business owner asks about their weekly report, performance, or how they're doing → tell them to type "my weekly report"
+- If a user wants daily updates, morning news, or a digest for their city → tell them to type "daily digest in [their city]" (e.g. "daily digest in Dallas")
+- If a user wants to stop the digest → tell them to type "stop digest"
 """
 
 
