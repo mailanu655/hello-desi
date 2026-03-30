@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # --- Anthropic (Claude AI) ---
     ANTHROPIC_API_KEY: str
 
+    # --- OpenRouter (cheap LLM tier — Gemini Flash etc.) ---
+    OPENROUTER_API_KEY: str = ""
+
+    # --- Google Gemini (direct API — alternative cheap tier) ---
+    GEMINI_API_KEY: str = ""
+
     # --- Supabase ---
     SUPABASE_URL: str = ""
     SUPABASE_KEY: str = ""

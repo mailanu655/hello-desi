@@ -441,9 +441,9 @@ async def _process_message(
             await _wa().send_text_message(wa_id, response_text)
             return
 
-        # ── 4j. Claude AI fallback ──────────────────────────────
-        logger.info(f"[{request_id}] Falling through to Claude for {wa_id}")
-        from app.services.claude_service import generate_response
+        # ── 4j. LLM fallback (multi-tier router) ────────────────
+        logger.info(f"[{request_id}] Falling through to LLM router for {wa_id}")
+        from app.services.llm_router import generate_response
 
         response_text = await generate_response(
             message=message_body,
