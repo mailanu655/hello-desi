@@ -14,6 +14,7 @@ Events handled:
   - invoice.payment_failed       → Notify owner of payment failure
 """
 
+import json
 import logging
 
 import stripe
@@ -42,8 +43,9 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
+    # Verify signature using Stripe SDK
     try:
-        event = stripe.Webhook.construct_event(
+        stripe.Webhook.construct_event(
             payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
         )
     except ValueError:
@@ -53,6 +55,8 @@ async def stripe_webhook(request: Request):
         logger.warning("Stripe webhook: invalid signature")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Parse raw JSON for data access (avoids StripeObject .get() issues)
+    event = json.loads(payload)
     event_type = event["type"]
     data = event["data"]["object"]
 
@@ -96,8 +100,8 @@ async def _handle_checkout_completed(session: dict, settings):
     """
     from supabase import create_client
 
-    customer_email = session.get("customer_email") or session.get("customer_details", {}).get("email", "")
-    customer_name = session.get("customer_details", {}).get("name", "")
+    customer_email = session.get("customer_email") or (session.get("customer_details") or {}).get("email", "")
+    customer_name = (session.get("customer_details") or {}).get("name", "")
     subscription_id = session.get("subscription")
     amount_total = session.get("amount_total", 0)  # in cents
 
@@ -172,8 +176,8 @@ async def _handle_subscription_updated(subscription: dict, settings):
 
     stripe_sub_id = subscription.get("id")
     status = subscription.get("status")  # active, past_due, canceled, etc.
-    items = subscription.get("items", {}).get("data", [])
-    amount = items[0].get("price", {}).get("unit_amount", 0) if items else 0
+    items_data = (subscription.get("items") or {}).get("data", [])
+    amount = (items_data[0].get("price") or {}).get("unit_amount", 0) if items_data else 0
     plan = _amount_to_plan(amount)
 
     logger.info(f"Subscription updated: {stripe_sub_id} → status={status}, plan={plan}")
@@ -295,7 +299,7 @@ async def _handle_payment_failed(invoice: dict, settings):
 
     if result.data and result.data[0].get("wa_id"):
         sub = result.data[0]
-        biz_name = sub.get("businesses", {}).get("name", "your business") if sub.get("businesses") else "your business"
+        biz_name = (sub.get("businesses") or {}).get("name", "your business")
 
         from app.services.whatsapp_service import WhatsAppService
         whatsapp = WhatsAppService(settings)
