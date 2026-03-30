@@ -99,6 +99,11 @@ def detect_monetization_intent(message: str) -> str | None:
         "boost my business", "premium listing", "upgrade my plan",
         "i want featured", "make my business featured",
     ]
+    leads_phrases = [
+        "my leads", "my notifications", "lead history",
+        "who searched for me", "my lead notifications",
+        "show my leads", "recent leads",
+    ]
     stats_phrases = [
         "my stats", "my analytics", "how many views",
         "business stats", "business analytics", "my inquiries",
@@ -112,6 +117,9 @@ def detect_monetization_intent(message: str) -> str | None:
     for phrase in upgrade_phrases:
         if phrase in msg:
             return "upgrade"
+    for phrase in leads_phrases:
+        if phrase in msg:
+            return "leads"
     for phrase in stats_phrases:
         if phrase in msg:
             return "stats"
@@ -594,3 +602,83 @@ def get_plan_status(wa_id: str, settings: Settings) -> str:
     except Exception as e:
         logger.error(f"Failed to get plan status for {wa_id}: {e}")
         return "Sorry, couldn't load your subscription. Try again later. 🙏"
+
+
+def get_notification_history(wa_id: str, settings: Settings, limit: int = 10) -> str:
+    """Show recent lead notifications for businesses owned by this wa_id."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Find businesses owned by this user
+        biz_result = (
+            client.table("businesses")
+            .select("id, name")
+            .ilike("source_id", f"%{wa_id}%")
+            .execute()
+        )
+
+        if not biz_result.data:
+            return (
+                "I couldn't find any businesses linked to your account.\n"
+                "Add your business first by typing *'add my business'*."
+            )
+
+        biz_ids = [b["id"] for b in biz_result.data]
+        biz_names = {b["id"]: b["name"] for b in biz_result.data}
+
+        # Fetch recent notifications
+        all_notifs = []
+        for biz_id in biz_ids:
+            notifs = (
+                client.table("notification_log")
+                .select("business_name, search_query, status, created_at")
+                .eq("business_id", biz_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            if notifs.data:
+                all_notifs.extend(notifs.data)
+
+        if not all_notifs:
+            return (
+                "No lead notifications yet for your business.\n\n"
+                "When someone searches for your services, you'll see it here!\n"
+                "💡 Tip: Reply *\"upgrade\"* to appear first in search results."
+            )
+
+        # Sort by created_at descending and take top N
+        all_notifs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        all_notifs = all_notifs[:limit]
+
+        lines = ["🔔 *Recent Lead Notifications*\n"]
+        for n in all_notifs:
+            query = n.get("search_query", "unknown search")[:50]
+            status = n.get("status", "")
+            biz = n.get("business_name", "your business")
+            created = n.get("created_at", "")
+
+            # Format date
+            date_str = ""
+            if created:
+                try:
+                    dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    date_str = dt.strftime("%b %d, %I:%M %p")
+                except Exception:
+                    date_str = created[:10]
+
+            status_icon = "✅" if status == "sent" else "⏳" if status == "rate_limited" else "❌"
+            lines.append(
+                f"{status_icon} *{biz}*\n"
+                f"   🔍 _{query}_\n"
+                f"   📅 {date_str}\n"
+            )
+
+        lines.append(
+            "📊 Want full analytics? Reply *\"my stats\"*"
+        )
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Failed to get notification history for {wa_id}: {e}")
+        return "Sorry, couldn't load your lead history right now. Try again later. 🙏"

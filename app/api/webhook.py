@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.deps import verify_webhook_signature
 from app.services.whatsapp_service import WhatsAppService
-from app.services.user_state_service import is_first_time_user, check_rate_limit
+from app.services.user_state_service import is_first_time_user, check_rate_limit, get_user_context
 from app.utils.whatsapp_utils import is_valid_whatsapp_message, extract_message_data
 from config.settings import Settings, get_settings
 
@@ -119,6 +119,26 @@ async def handle_message(
                 await whatsapp.send_text_message(wa_id, welcome)
                 return {"status": "ok"}
 
+        # ── Returning user personalized greeting ────────────────
+        msg_lower = message_body.lower().strip()
+        greetings = {"hi", "hello", "hey", "hola", "namaste", "start", "help"}
+        if msg_lower in greetings:
+            user_ctx = get_user_context(wa_id, settings)
+            if user_ctx:
+                stored_name = user_ctx.get("name") or name
+                welcome_back = (
+                    f"Welcome back, {stored_name}! 👋\n\n"
+                    "What can I help you with today?\n\n"
+                    "🔍 Search for businesses or services\n"
+                    "🏪 *\"add my business\"* — list your business\n"
+                    "📊 *\"my stats\"* — see your business performance\n"
+                    "💎 *\"upgrade\"* — boost your listing\n"
+                    "📰 *\"daily digest in [city]\"* — get daily updates"
+                )
+                whatsapp = WhatsAppService(settings)
+                await whatsapp.send_text_message(wa_id, welcome_back)
+                return {"status": "ok"}
+
         # ── Check for business registration / update flow ────────
         from app.services.business_registration import (
             detect_registration_intent,
@@ -187,6 +207,7 @@ async def handle_message(
             start_upgrade_flow,
             get_business_stats,
             get_plan_status,
+            get_notification_history,
         )
 
         # If user already has an active upgrade session, handle it
@@ -266,6 +287,11 @@ async def handle_message(
         money_intent = detect_monetization_intent(message_body)
         if money_intent == "upgrade":
             response_text = start_upgrade_flow(wa_id)
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
+        elif money_intent == "leads":
+            response_text = get_notification_history(wa_id, settings)
             whatsapp = WhatsAppService(settings)
             await whatsapp.send_text_message(wa_id, response_text)
             return {"status": "ok"}

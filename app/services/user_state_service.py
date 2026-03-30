@@ -75,6 +75,28 @@ def is_first_time_user(wa_id: str, name: str, settings: Settings) -> bool:
         return False
 
 
+def get_user_context(wa_id: str, settings: Settings) -> dict | None:
+    """
+    Return stored user context for personalization.
+    Returns dict with name, first_seen, last_active, messages_today or None.
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("user_state")
+            .select("name, first_seen, last_active, messages_today")
+            .eq("wa_id", wa_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.warning(f"get_user_context failed for {wa_id}: {e}")
+        return None
+
+
 def check_rate_limit(wa_id: str, settings: Settings) -> bool:
     """
     Check if user has exceeded daily message limit.

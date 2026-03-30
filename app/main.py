@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from app.api.webhook import router as webhook_router
 from app.api.tasks import router as tasks_router
+from app.api.stripe_webhook import router as stripe_router
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     # Register routes
     application.include_router(webhook_router, prefix="/api/v1")
     application.include_router(tasks_router, prefix="/api/v1")
+    application.include_router(stripe_router, prefix="/api/v1")
 
     @application.get("/health")
     async def health_check():

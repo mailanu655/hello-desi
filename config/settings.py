@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     # --- Open Exchange Rates ---
     OPEN_EXCHANGE_RATES_APP_ID: str = ""
 
-    # --- Stripe Payment Links ---
+    # --- Stripe ---
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_FEATURED_LINK: str = ""
     STRIPE_PREMIUM_LINK: str = ""
 
