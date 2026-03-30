@@ -58,14 +58,18 @@ Tier = Literal["cheap", "mid", "premium"]
 # Direct Gemini API config
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_MODEL = "gemini-2.0-flash-lite"
-GEMINI_TIMEOUT = 8.0
-GEMINI_MAX_TOKENS = 300
+GEMINI_TIMEOUT = 5.0       # tight timeout — fast fail → fast fallback
+GEMINI_MAX_TOKENS = 200    # cap cheap model tokens — keeps cost predictable
 
 # OpenRouter config (fallback if no GEMINI_API_KEY)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "google/gemini-flash-1.5-8b"
-OPENROUTER_TIMEOUT = 8.0
-OPENROUTER_MAX_TOKENS = 300
+OPENROUTER_TIMEOUT = 5.0   # tight timeout — fast fail → fast fallback
+OPENROUTER_MAX_TOKENS = 200
+
+# Circuit breaker: skip cheap tier for this many seconds after failure
+CIRCUIT_BREAKER_TTL = 60
+CIRCUIT_BREAKER_KEY = "circuit:cheap_down"
 
 # ── Query classification ──────────────────────────────────────────
 
@@ -90,7 +94,9 @@ def classify_query(message: str) -> Tier:
     Rules:
       - Greetings, thanks, yes/no, simple questions → cheap
       - Local business search (needs DB context injection) → mid
+      - Business-critical (recommend, compare, best) → mid (needs good reasoning)
       - Immigration, finance, legal, long queries → premium
+      - Mid-length messages (250-400 chars) → mid (prevent cheap model struggling)
       - Everything else (general questions) → cheap
     """
     msg = message.lower().strip()
@@ -103,8 +109,16 @@ def classify_query(message: str) -> Tier:
     if len(message) > 400:
         return "premium"
 
+    # ── Mid: business-critical queries (need good reasoning) ───
+    if any(kw in msg for kw in FORCE_CLAUDE_PATTERNS):
+        return "mid"
+
     # ── Mid: local business queries (need context injection) ───
     if any(kw in msg for kw in CONTEXT_SIGNALS):
+        return "mid"
+
+    # ── Mid: medium-length messages (cheap model struggles) ────
+    if len(message) > 250:
         return "mid"
 
     # ── Cheap: simple patterns ─────────────────────────────────
@@ -117,7 +131,7 @@ def classify_query(message: str) -> Tier:
 
 # ── Quality detection (for cheap model responses) ─────────────────
 
-# Signs the cheap model gave a bad response
+# Signs the cheap model gave a bad/useless response
 BAD_RESPONSE_SIGNALS = [
     "i cannot",
     "i can't help",
@@ -127,8 +141,19 @@ BAD_RESPONSE_SIGNALS = [
     "i apologize, but",
     "sorry, i cannot",
     "i'm unable to",
-    "error",
-    # Too short / empty
+    "i don't know",
+    "cannot help",
+    "i'm just a",
+    "i am just a",
+    "not sure how to help",
+    "beyond my capabilities",
+]
+
+# Business-critical queries that should always go to Claude
+FORCE_CLAUDE_PATTERNS = [
+    "recommend", "compare", "best", "review",
+    "should i", "which one", "pros and cons",
+    "help me choose", "help me find",
 ]
 
 
@@ -137,21 +162,53 @@ def is_low_quality(response: str, user_message: str) -> bool:
     Heuristic check: did the cheap model give a usable response?
 
     Returns True if the response should be retried on a higher tier.
+    Checks: too short, refusals, echo, no structure, ends with question.
     """
-    if not response or len(response.strip()) < 15:
+    if not response or len(response.strip()) < 40:
         return True
 
     resp_lower = response.lower()
 
-    # Check for refusal / inability patterns
+    # Refusal / inability patterns
     if any(sig in resp_lower for sig in BAD_RESPONSE_SIGNALS):
         return True
 
     # Response is just echoing the question back
-    if user_message.lower().strip() in resp_lower and len(response) < 50:
+    user_lower = user_message.lower().strip()
+    if user_lower in resp_lower and len(response) < 60:
+        return True
+
+    # Response ends with a question (likely confused / deflecting)
+    if response.strip().endswith("?") and len(response) < 100:
         return True
 
     return False
+
+
+# ── Circuit breaker (skip cheap tier during outages) ──────────────
+
+def _is_cheap_circuit_open(settings: Settings) -> bool:
+    """Check if the cheap tier circuit breaker is tripped (Redis-backed)."""
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if r and r.get(CIRCUIT_BREAKER_KEY):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _trip_cheap_circuit(settings: Settings) -> None:
+    """Trip the circuit breaker — skip cheap tier for CIRCUIT_BREAKER_TTL seconds."""
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if r:
+            r.setex(CIRCUIT_BREAKER_KEY, CIRCUIT_BREAKER_TTL, "1")
+            logger.warning(f"Circuit breaker TRIPPED — skipping cheap tier for {CIRCUIT_BREAKER_TTL}s")
+    except Exception:
+        pass
 
 
 # ── Direct Gemini API (preferred cheap tier) ──────────────────────
@@ -211,12 +268,16 @@ async def _call_gemini(
 
     except httpx.TimeoutException:
         logger.warning("Gemini timeout — will try OpenRouter or fallback to mid tier")
+        _trip_cheap_circuit(settings)
         return None
     except httpx.HTTPStatusError as e:
         logger.warning(f"Gemini HTTP {e.response.status_code}: {e.response.text[:200]}")
+        if e.response.status_code >= 500:
+            _trip_cheap_circuit(settings)
         return None
     except Exception as e:
         logger.warning(f"Gemini error: {e}")
+        _trip_cheap_circuit(settings)
         return None
 
 
@@ -277,13 +338,84 @@ async def _call_openrouter(
 
     except httpx.TimeoutException:
         logger.warning("OpenRouter timeout — will fallback to mid tier")
+        _trip_cheap_circuit(settings)
         return None
     except httpx.HTTPStatusError as e:
         logger.warning(f"OpenRouter HTTP {e.response.status_code}: {e.response.text[:200]}")
+        if e.response.status_code >= 500:
+            _trip_cheap_circuit(settings)
         return None
     except Exception as e:
         logger.warning(f"OpenRouter error: {e}")
+        _trip_cheap_circuit(settings)
         return None
+
+
+# ── Cheap tier helpers ────────────────────────────────────────────
+
+async def _try_cheap_providers(
+    message: str,
+    name: str,
+    system_msg: str,
+    messages: list[dict],
+    settings: Settings,
+    gemini_key: str,
+    openrouter_key: str,
+) -> tuple[str | None, str | None]:
+    """Try Gemini direct first, then OpenRouter. Returns (response, model_name)."""
+    if gemini_key:
+        resp = await _call_gemini(
+            message=message, name=name,
+            system_msg=system_msg, messages=messages,
+            settings=settings,
+        )
+        if resp:
+            return resp, GEMINI_MODEL
+
+    if openrouter_key:
+        resp = await _call_openrouter(
+            message=message, name=name,
+            system_msg=system_msg, messages=messages,
+            settings=settings,
+        )
+        if resp:
+            return resp, OPENROUTER_MODEL
+
+    return None, None
+
+
+async def _finalize_cheap_response(
+    cheap_response: str,
+    message: str,
+    wa_id: str,
+    name: str,
+    model_used: str | None,
+    start_time: float,
+    include_history: bool,
+    settings: Settings,
+    attempt: int = 1,
+) -> str:
+    """Post-process, cache, log, and return a cheap model response."""
+    response_text = _enforce_disclaimers(message, cheap_response)
+    formatted = process_text_for_whatsapp(response_text)
+    formatted = _clamp_output(formatted)
+
+    elapsed = time.monotonic() - start_time
+    logger.info(
+        f"Router response for {wa_id} | "
+        f"tier=cheap | model={model_used} | "
+        f"attempt={attempt} | "
+        f"chars={len(formatted)} | "
+        f"time={elapsed:.2f}s | "
+        f"history={'on' if include_history else 'off'}"
+    )
+
+    # Save history + cache
+    if include_history:
+        await _save_history(wa_id, message, formatted, settings)
+    await _cache_response(message, name, formatted, settings)
+
+    return formatted
 
 
 # ── Main router entry point ───────────────────────────────────────
@@ -324,9 +456,17 @@ async def generate_response(
 
     # ── 3. Classify query ───────────────────────────────────────
     tier = classify_query(message)
+    fallback_used = False
     logger.info(f"Router classified query from {wa_id} as '{tier}': {message[:50]}...")
 
-    # ── 4. Try cheap tier (Gemini direct → OpenRouter fallback) ──
+    # ── 4. Try cheap tier (Gemini direct → OpenRouter → retry once) ──
+    if tier == "cheap":
+        # Circuit breaker: skip cheap tier if recently tripped
+        if _is_cheap_circuit_open(settings):
+            logger.info(f"Circuit breaker OPEN for {wa_id} — skipping cheap tier")
+            tier = "mid"
+            fallback_used = True
+
     if tier == "cheap":
         gemini_key = getattr(settings, "GEMINI_API_KEY", "")
         openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "")
@@ -335,63 +475,49 @@ async def generate_response(
             # Build system prompt (no business context for cheap queries)
             system_msg = SYSTEM_PROMPT + f"\nThe user's name is {name}."
 
-            # Load conversation history
+            # Tier-aware history: cheap model gets only last 1 turn
+            # (reduces token cost, cheap model doesn't need deep context)
             if include_history:
-                messages = await _get_history(wa_id, settings)
+                full_history = await _get_history(wa_id, settings)
+                messages = full_history[-2:] if full_history else []  # last 1 exchange
             else:
                 messages = []
             messages.append({"role": "user", "content": message})
 
-            # Try Gemini direct first, then OpenRouter
-            cheap_response = None
-            model_used = None
-
-            if gemini_key:
-                cheap_response = await _call_gemini(
-                    message=message, name=name,
-                    system_msg=system_msg, messages=messages,
-                    settings=settings,
-                )
-                if cheap_response:
-                    model_used = GEMINI_MODEL
-
-            if not cheap_response and openrouter_key:
-                cheap_response = await _call_openrouter(
-                    message=message, name=name,
-                    system_msg=system_msg, messages=messages,
-                    settings=settings,
-                )
-                if cheap_response:
-                    model_used = OPENROUTER_MODEL
+            # ── Attempt 1: Try Gemini direct, then OpenRouter ──
+            cheap_response, model_used = await _try_cheap_providers(
+                message, name, system_msg, messages, settings,
+                gemini_key, openrouter_key,
+            )
 
             if cheap_response and not is_low_quality(cheap_response, message):
-                # ── Post-process ────────────────────────────────
-                response_text = _enforce_disclaimers(message, cheap_response)
-                formatted = process_text_for_whatsapp(response_text)
-                formatted = _clamp_output(formatted)
-
-                elapsed = time.monotonic() - start_time
-                logger.info(
-                    f"Router response for {wa_id} | "
-                    f"tier=cheap | model={model_used} | "
-                    f"chars={len(formatted)} | "
-                    f"time={elapsed:.2f}s | "
-                    f"history={'on' if include_history else 'off'}"
+                return await _finalize_cheap_response(
+                    cheap_response, message, wa_id, name, model_used,
+                    start_time, include_history, settings, attempt=1,
                 )
 
-                # Save history + cache
-                if include_history:
-                    await _save_history(wa_id, message, formatted, settings)
-                await _cache_response(message, name, formatted, settings)
+            # ── Attempt 2: Retry once before escalating ────────
+            if cheap_response:
+                # Got a response but quality was bad — retry once
+                logger.info(f"Cheap model retry for {wa_id} (quality gate failed)")
+                cheap_response, model_used = await _try_cheap_providers(
+                    message, name, system_msg, messages, settings,
+                    gemini_key, openrouter_key,
+                )
 
-                return formatted
+                if cheap_response and not is_low_quality(cheap_response, message):
+                    return await _finalize_cheap_response(
+                        cheap_response, message, wa_id, name, model_used,
+                        start_time, include_history, settings, attempt=2,
+                    )
 
-            # Cheap model failed quality check → escalate to mid
+            # Both attempts failed → escalate to mid
             logger.info(
-                f"Cheap model quality check failed for {wa_id} — "
+                f"Cheap model failed for {wa_id} after retry — "
                 f"escalating to mid tier"
             )
             tier = "mid"
+            fallback_used = True
 
     # ── 5. Mid / Premium → delegate to Claude service ───────────
     # The claude_service already handles:
@@ -411,10 +537,21 @@ async def generate_response(
         include_history=include_history,
     )
 
+    # ── Sanity fallback: catch empty/whitespace Claude responses ──
+    if not response or not response.strip():
+        logger.warning(f"Empty Claude response for {wa_id} — returning safe fallback")
+        response = (
+            "Sorry, I'm having trouble right now. "
+            "Try asking again in a moment! 🙏"
+        )
+
     elapsed = time.monotonic() - start_time
     logger.info(
         f"Router response for {wa_id} | "
         f"tier={tier} | "
+        f"fallback={fallback_used} | "
+        f"msg_len={len(message)} | "
+        f"resp_len={len(response)} | "
         f"time={elapsed:.2f}s"
     )
 
