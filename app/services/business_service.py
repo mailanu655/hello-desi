@@ -301,13 +301,17 @@ def detect_categories(message: str) -> list[str]:
     if matches:
         return matches
 
-    # ── Pass 2: fuzzy match on individual words ────────────────
+    # ── Pass 2: fuzzy match on individual words (skip noise) ────
+    # Only fuzzy-match words ≥4 chars to avoid noise from "in", "me", "the"
+    STOP_WORDS = {"near", "find", "show", "want", "need", "looking", "search",
+                  "best", "good", "cheap", "open", "around", "area", "place",
+                  "places", "where", "what", "from", "with", "here", "there"}
     words = re.findall(r'\w+', msg)
     all_keys = list(CATEGORY_MAP.keys())
     for word in words:
-        if len(word) < 3:
+        if len(word) < 4 or word in STOP_WORDS:
             continue
-        close = get_close_matches(word, all_keys, n=1, cutoff=0.7)
+        close = get_close_matches(word, all_keys, n=1, cutoff=0.75)
         if close:
             cat = CATEGORY_MAP[close[0]]
             if cat not in matches:
@@ -425,6 +429,35 @@ def _cache_search(cache_key: str, results: list[dict], settings: Settings) -> No
         pass
 
 
+def _save_last_search(
+    wa_id: str, city: str | None, state: str | None,
+    categories: list[str], settings: Settings,
+) -> None:
+    """Save last search params in Redis for follow-up queries ('show more')."""
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if r:
+            data = json.dumps({"city": city, "state": state, "categories": categories})
+            r.setex(f"lastsearch:{wa_id}", 600, data)  # 10 min TTL
+    except Exception:
+        pass
+
+
+def get_last_search(wa_id: str, settings: Settings) -> dict | None:
+    """Retrieve last search params for follow-up queries."""
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if r:
+            data = r.get(f"lastsearch:{wa_id}")
+            if data:
+                return json.loads(data)
+    except Exception:
+        pass
+    return None
+
+
 # ── Main search function ──────────────────────────────────────────
 
 def search_businesses(
@@ -485,13 +518,14 @@ def search_businesses(
         elif state:
             query = query.eq("state", state)
 
-        # Ranking: featured → rating → reviews → recency
+        # Ranking: featured → recency (light boost) → rating → reviews
+        # Recency before rating gives new businesses a fair shot
         query = (
             query
             .order("is_featured", desc=True)
+            .order("created_at", desc=True)
             .order("rating", desc=True)
             .order("review_count", desc=True)
-            .order("created_at", desc=True)
         )
         # Fetch extra for dedup headroom
         query = query.limit(limit + 5)
@@ -509,6 +543,10 @@ def search_businesses(
         # Cache results
         _cache_search(cache_key, businesses, settings)
 
+        # Save last search for follow-up queries ("show more")
+        if wa_id:
+            _save_last_search(wa_id, city, state, categories, settings)
+
         return businesses
 
     except Exception as e:
@@ -525,6 +563,20 @@ NO_RESULTS_MESSAGE = (
     "👉 _\"grocery store in Plano TX\"_\n"
     "👉 _\"dentist in Columbus\"_\n\n"
     "🏪 Own a business? Reply *\"add my business\"* to get listed FREE!"
+)
+
+NO_CATEGORY_MESSAGE = (
+    "What are you looking for? 🔍\n\n"
+    "🍛 *Restaurants* — Indian food, tiffin, catering\n"
+    "🛒 *Grocery* — Indian stores, spices\n"
+    "🧑‍⚕️ *Doctor* — physicians, dentists, specialists\n"
+    "⚖️ *Lawyer* — immigration, legal services\n"
+    "💰 *CPA* — tax filing, accounting\n"
+    "🏠 *Realtor* — homes, apartments\n"
+    "💇 *Salon* — beauty, threading, mehndi\n"
+    "🕌 *Temple* — mandir, gurdwara, mosque\n\n"
+    "Just type what you need + your city!\n"
+    "Example: _\"dentist in Dallas\"_"
 )
 
 

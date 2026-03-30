@@ -25,7 +25,7 @@ from typing import Any
 
 import anthropic
 
-from app.services.business_service import search_businesses, format_businesses_for_prompt, NO_RESULTS_MESSAGE
+from app.services.business_service import search_businesses, format_businesses_for_prompt
 from app.utils.whatsapp_utils import process_text_for_whatsapp
 from config.settings import Settings
 
@@ -335,7 +335,7 @@ async def generate_response(
 
         if _looks_local(message):
             try:
-                results = search_businesses(message, settings, limit=5, wa_id=wa_id)
+                results = search_businesses(message, settings, limit=5)
                 if results:
                     business_context = format_businesses_for_prompt(results)
                     logger.info(f"Found {len(results)} businesses for query from {wa_id}")
@@ -344,11 +344,6 @@ async def generate_response(
                         log_inquiry(results, wa_id, "search", message, settings)
                     except Exception as inq_err:
                         logger.warning(f"Inquiry logging failed: {inq_err}")
-                else:
-                    # No results — return explicit helpful message instead of
-                    # letting Claude guess (which may hallucinate listings)
-                    logger.info(f"No business results for query from {wa_id}")
-                    return NO_RESULTS_MESSAGE
             except Exception as e:
                 logger.warning(f"Business lookup failed for {wa_id}: {e}")
 
