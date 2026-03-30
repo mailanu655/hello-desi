@@ -51,7 +51,8 @@ class Settings(BaseSettings):
     STRIPE_PREMIUM_LINK: str = ""
 
     # --- Admin / Alerts ---
-    ADMIN_WA_ID: str = ""  # WhatsApp ID for admin alerts (e.g. "1234567890")
+    SLACK_BOT_TOKEN: str = ""      # Slack Bot OAuth token (xoxb-...)
+    SLACK_ALERT_CHANNEL: str = ""  # Slack channel ID for admin alerts
 
     # --- App Config ---
     DEBUG: bool = False

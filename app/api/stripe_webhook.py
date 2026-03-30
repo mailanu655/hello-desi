@@ -524,19 +524,33 @@ def _amount_to_plan(amount_cents: int) -> str | None:
 
 
 async def _send_admin_alert(message: str, settings):
-    """Send a WhatsApp alert to the admin. Silently fails if ADMIN_WA_ID is not set."""
-    admin_wa_id = getattr(settings, "ADMIN_WA_ID", "")
-    if not admin_wa_id:
-        logger.info("Admin alert skipped (ADMIN_WA_ID not configured)")
+    """Send a Slack alert to the admin channel. Silently fails if not configured."""
+    slack_token = getattr(settings, "SLACK_BOT_TOKEN", "")
+    slack_channel = getattr(settings, "SLACK_ALERT_CHANNEL", "")
+    if not slack_token or not slack_channel:
+        logger.info("Admin alert skipped (SLACK_BOT_TOKEN or SLACK_ALERT_CHANNEL not configured)")
         return
 
     try:
-        from app.services.whatsapp_service import WhatsAppService
-        whatsapp = WhatsAppService(settings)
-        await whatsapp.send_text_message(admin_wa_id, message)
-        logger.info(f"Admin alert sent to {admin_wa_id}")
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {slack_token}"},
+                json={
+                    "channel": slack_channel,
+                    "text": message,
+                    "unfurl_links": False,
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("ok"):
+                logger.info(f"Admin alert sent to Slack channel {slack_channel}")
+            else:
+                logger.warning(f"Slack alert failed: {data.get('error')}")
     except Exception as e:
-        logger.warning(f"Failed to send admin alert: {e}")
+        logger.warning(f"Failed to send admin alert to Slack: {e}")
 
 
 async def _try_auto_reconcile(
