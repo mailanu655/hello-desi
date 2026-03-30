@@ -230,33 +230,7 @@ async def _handle_checkout_completed(session: dict, event_id: str, settings):
                 biz_name = (sub.get("businesses") or {}).get("name", "your business")
                 await _send_activation_confirmation(sub["wa_id"], plan, biz_name, settings)
 
-    # If no match found, try to match by customer email → user_state
-    if not activated and customer_email:
-        # Look up user by email in user_state to find their wa_id
-        user_result = (
-            client.table("user_state")
-            .select("wa_id")
-            .eq("email", customer_email)
-            .limit(1)
-            .execute()
-        )
-
-        wa_id = user_result.data[0]["wa_id"] if user_result.data else None
-
-        if wa_id:
-            # Send fallback acknowledgment
-            from app.services.whatsapp_service import WhatsAppService
-            whatsapp = WhatsAppService(settings)
-            plan_labels = {"featured": "⭐ Featured", "premium": "👑 Premium"}
-            await whatsapp.send_text_message(
-                wa_id,
-                f"We received your payment for *{plan_labels.get(plan, plan)}* 👍\n\n"
-                "Setting up your plan now...\n"
-                "If you don't see updates in a few minutes, reply *\"help\"*."
-            )
-            logger.info(f"Sent fallback payment acknowledgment to {wa_id}")
-
-    # Log the event (also serves as idempotency marker)
+    # Log the event FIRST (serves as idempotency marker even if later steps fail)
     await _log_stripe_event(
         event_id, "checkout.session.completed", settings,
         stripe_subscription_id=subscription_id or "",
