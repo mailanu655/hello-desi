@@ -177,20 +177,77 @@ def _get_new_businesses(city: str, settings: Settings, days: int = 7) -> list[di
 
 
 def _get_active_deals(city: str, settings: Settings) -> list[dict]:
-    """Get active deals for this city."""
+    """
+    Get active deals for this city, ranked for digest.
+    Prefers: featured businesses first, then urgency (expiring soon), then recency.
+    Returns top 3 deals.
+    """
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+
+        # Fetch more than needed for ranking
         result = (
             client.table("deals")
-            .select("title, description, business_name, expires_at")
+            .select("title, description, business_name, business_id, expires_at, created_at")
             .ilike("city", f"%{city}%")
-            .gte("expires_at", now)
+            .eq("is_active", True)
+            .gte("expires_at", now_iso)
             .order("created_at", desc=True)
-            .limit(3)
+            .limit(15)
             .execute()
         )
-        return result.data or []
+
+        deals = result.data or []
+        if not deals:
+            return []
+
+        # Look up which businesses are featured
+        biz_ids = list({d.get("business_id") for d in deals if d.get("business_id")})
+        featured_ids: set[str] = set()
+        if biz_ids:
+            try:
+                fr = (
+                    client.table("businesses")
+                    .select("id")
+                    .eq("is_featured", True)
+                    .in_("id", biz_ids)
+                    .execute()
+                )
+                featured_ids = {b["id"] for b in (fr.data or [])}
+            except Exception:
+                pass
+
+        # Score and rank
+        def _score(d: dict) -> float:
+            s = 0.0
+            if d.get("business_id") in featured_ids:
+                s += 100
+            # Urgency: expiring within 48h gets boost
+            exp = d.get("expires_at", "")
+            if exp:
+                try:
+                    exp_dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                    hours_left = (exp_dt - now).total_seconds() / 3600
+                    if 0 < hours_left < 48:
+                        s += 50
+                except Exception:
+                    pass
+            # Recency
+            cr = d.get("created_at", "")
+            if cr:
+                try:
+                    cr_dt = datetime.fromisoformat(cr.replace("Z", "+00:00"))
+                    age_h = (now - cr_dt).total_seconds() / 3600
+                    s += max(0, 30 - age_h)
+                except Exception:
+                    pass
+            return s
+
+        deals.sort(key=_score, reverse=True)
+        return deals[:3]
+
     except Exception as e:
         logger.warning(f"Failed to get deals for {city}: {e}")
         return []
@@ -259,17 +316,30 @@ def build_digest_message(city: str, settings: Settings) -> str:
     # ── Deals ──
     if deals:
         msg += "💸 *Deals*\n"
-        for d in deals[:2]:
+        for d in deals[:3]:
             biz_name = d.get("business_name", "Local Business")
             title = d.get("title", "")
-            msg += f"• {biz_name}: {title}\n"
+            urgency = ""
             if d.get("expires_at"):
                 try:
                     exp = datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00"))
-                    if (exp - now).days <= 2:
-                        msg += "  ⏰ Expires soon!\n"
+                    days_left = (exp - now).days
+                    if days_left <= 0:
+                        urgency = " ⏰ Last day!"
+                    elif days_left <= 2:
+                        urgency = " ⏰ Ends soon!"
                 except Exception:
                     pass
+            # Freshness
+            freshness = ""
+            if d.get("created_at"):
+                try:
+                    cr = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
+                    if (now - cr).days <= 1:
+                        freshness = "🆕 "
+                except Exception:
+                    pass
+            msg += f"• {freshness}{biz_name}: {title}{urgency}\n"
         msg += "\n"
 
     # ── Sponsored Slot (Featured businesses) ──

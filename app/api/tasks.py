@@ -75,6 +75,22 @@ async def send_daily_digest(
     return {"status": "ok", "summary": summary}
 
 
+@router.post("/tasks/expire-deals", dependencies=[Depends(verify_cron_secret)])
+async def expire_deals(
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Deactivate expired deals and notify business owners.
+    Called by cron daily at 6am EST (before digest).
+    """
+    from app.services.deals_service import expire_stale_deals
+
+    logger.info("Starting deal expiry run...")
+    summary = await expire_stale_deals(settings)
+    logger.info(f"Deal expiry run complete: {summary}")
+    return {"status": "ok", "summary": summary}
+
+
 @router.get("/tasks/analytics", dependencies=[Depends(verify_cron_secret)])
 async def get_analytics(
     settings: Settings = Depends(get_settings),

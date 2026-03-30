@@ -35,6 +35,20 @@ async def _run_daily_digest():
         logger.error(f"⏰ CRON: Digest failed — {e}")
 
 
+async def _run_deal_expiry():
+    """Expire stale deals and notify owners — runs every day at 6:00 AM EST."""
+    try:
+        from config.settings import get_settings
+        from app.services.deals_service import expire_stale_deals
+
+        settings = get_settings()
+        logger.info("⏰ CRON: Starting deal expiry run...")
+        summary = await expire_stale_deals(settings)
+        logger.info(f"⏰ CRON: Deal expiry complete — {summary}")
+    except Exception as e:
+        logger.error(f"⏰ CRON: Deal expiry failed — {e}")
+
+
 async def _run_weekly_proof_messages():
     """Send weekly proof messages — runs every Monday at 10:00 AM EST."""
     try:
@@ -64,6 +78,15 @@ async def lifespan(application: FastAPI):
         replace_existing=True,
     )
 
+    # Deal expiry cleanup — 6:00 AM US/Eastern every day (before digest)
+    scheduler.add_job(
+        _run_deal_expiry,
+        CronTrigger(hour=6, minute=0, timezone="America/New_York"),
+        id="deal_expiry",
+        name="Deal Expiry Cleanup",
+        replace_existing=True,
+    )
+
     # Weekly proof messages — Monday 10:00 AM US/Eastern
     scheduler.add_job(
         _run_weekly_proof_messages,
@@ -74,7 +97,7 @@ async def lifespan(application: FastAPI):
     )
 
     scheduler.start()
-    logger.info("⏰ APScheduler started — digest daily 8am ET, proof msgs Monday 10am ET")
+    logger.info("⏰ APScheduler started — deal expiry 6am ET, digest 8am ET, proof msgs Monday 10am ET")
     yield
     scheduler.shutdown()
     logger.info("⏰ APScheduler shut down")

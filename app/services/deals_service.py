@@ -90,7 +90,7 @@ def cancel_deal_session(wa_id: str) -> str:
 def detect_deal_intent(message: str) -> str | None:
     """
     Detect if user wants to post a deal or browse deals.
-    Returns "post", "browse", or None.
+    Returns "post", "browse", "browse_today", or None.
     """
     msg = message.lower().strip()
 
@@ -101,20 +101,81 @@ def detect_deal_intent(message: str) -> str | None:
         "post an offer", "add an offer", "post offer",
         "i have a deal", "i have a promotion", "share a deal",
     ]
+
+    # Today-specific browse phrases (checked first — more specific)
+    today_phrases = [
+        "today's deals", "todays deals", "deals today",
+        "today's offers", "todays offers", "offers today",
+        "today's discounts", "todays discounts", "discounts today",
+        "today's coupons", "todays coupons", "coupons today",
+        "what's on today", "whats on today",
+    ]
+
     browse_phrases = [
-        "deals near me", "any deals", "show deals", "find deals",
-        "deals in", "promotions near", "promotions in", "offers near",
-        "offers in", "today's deals", "todays deals", "current deals",
-        "what deals", "show me deals", "browse deals", "latest deals",
-        "any offers", "any promotions", "deals around",
+        # Core deal terms
+        "deals near", "any deals", "show deals", "find deals",
+        "deals in", "deals around", "browse deals", "latest deals",
+        "what deals", "show me deals", "current deals", "list deals",
+        "list all deals", "show all deals",
+        # Discount synonyms
+        "discounts near", "any discounts", "show discounts", "find discounts",
+        "discounts in", "discounts around",
+        # Offer synonyms
+        "offers near", "any offers", "show offers", "find offers",
+        "offers in", "offers around",
+        # Coupon synonyms
+        "coupons near", "any coupons", "show coupons", "find coupons",
+        "coupons in", "coupons around",
+        # Promotion synonyms
+        "promotions near", "any promotions", "show promotions",
+        "promotions in", "promos near", "any promos",
+        # Sale synonyms
+        "sales near", "any sales", "show sales", "sales in",
+        # Generic
+        "what's on sale", "whats on sale",
     ]
 
     for phrase in post_phrases:
         if phrase in msg:
             return "post"
+    for phrase in today_phrases:
+        if phrase in msg:
+            return "browse_today"
     for phrase in browse_phrases:
         if phrase in msg:
             return "browse"
+    return None
+
+
+def _extract_category_filter(message: str) -> str | None:
+    """Extract category keyword from deal search query for filtering."""
+    msg = message.lower()
+    category_map = {
+        "grocery": "grocery",
+        "groceries": "grocery",
+        "food": "restaurant",
+        "restaurant": "restaurant",
+        "tiffin": "restaurant",
+        "catering": "restaurant",
+        "beauty": "beauty",
+        "salon": "beauty",
+        "clothing": "clothing",
+        "jewelry": "jewelry",
+        "temple": "religious",
+        "tutoring": "education",
+        "education": "education",
+        "real estate": "real estate",
+        "insurance": "insurance",
+        "tax": "tax",
+        "immigration": "immigration",
+        "lawyer": "legal",
+        "doctor": "healthcare",
+        "dentist": "healthcare",
+        "pharmacy": "healthcare",
+    }
+    for keyword, category in category_map.items():
+        if keyword in msg:
+            return category
     return None
 
 
@@ -415,25 +476,33 @@ def _insert_deal(session: DealSession, settings: Settings) -> str:
 
 
 # ── Deal search / browse (for users) ───────────────────────────
-def search_deals(message: str, settings: Settings, limit: int = 5) -> list[dict]:
+def search_deals(
+    message: str,
+    settings: Settings,
+    limit: int = 5,
+    today_only: bool = False,
+) -> list[dict]:
     """
     Search active deals by city, state, category, or keyword.
+    Supports today-only filtering and category extraction.
+    Results are ranked: featured businesses first, then by recency.
     Returns a list of deal dicts.
     """
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
 
         query = (
             client.table("deals")
             .select("*")
             .eq("is_active", True)
-            .gte("expires_at", now)
+            .gte("expires_at", now_iso)
             .order("created_at", desc=True)
-            .limit(limit)
+            .limit(limit * 3)  # fetch more for ranking
         )
 
-        # Try to extract city from message
+        # City/state filter
         from app.services.business_service import detect_city_state
         city, state = detect_city_state(message)
         if city:
@@ -441,8 +510,74 @@ def search_deals(message: str, settings: Settings, limit: int = 5) -> list[dict]
         if state:
             query = query.eq("state", state.upper())
 
+        # Category filter
+        cat_filter = _extract_category_filter(message)
+        if cat_filter:
+            query = query.ilike("category", f"%{cat_filter}%")
+
+        # Today-only: deals expiring within 24 hours
+        if today_only:
+            end_of_today = (now + timedelta(hours=24)).isoformat()
+            query = query.lte("expires_at", end_of_today)
+
         result = query.execute()
-        return result.data if result.data else []
+        deals = result.data if result.data else []
+
+        if not deals:
+            return []
+
+        # ── Ranking: featured businesses get boost ──
+        # Look up which businesses are featured
+        biz_ids = list({d.get("business_id") for d in deals if d.get("business_id")})
+        featured_ids: set[str] = set()
+        if biz_ids:
+            try:
+                featured_result = (
+                    client.table("businesses")
+                    .select("id")
+                    .eq("is_featured", True)
+                    .in_("id", biz_ids)
+                    .execute()
+                )
+                featured_ids = {b["id"] for b in (featured_result.data or [])}
+            except Exception:
+                pass
+
+        # Score each deal
+        def _deal_score(deal: dict) -> float:
+            score = 0.0
+            # Featured boost (+100)
+            if deal.get("business_id") in featured_ids:
+                score += 100
+                deal["is_featured_business"] = True
+            else:
+                deal["is_featured_business"] = False
+            # Recency boost (newer = higher, max +50)
+            created = deal.get("created_at", "")
+            if created:
+                try:
+                    cr_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    age_hours = (now - cr_dt).total_seconds() / 3600
+                    score += max(0, 50 - age_hours)
+                except Exception:
+                    pass
+            # Urgency boost (expiring soon = higher, max +30)
+            expires = deal.get("expires_at", "")
+            if expires:
+                try:
+                    exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                    hours_left = (exp_dt - now).total_seconds() / 3600
+                    if 0 < hours_left < 48:
+                        score += 30
+                    elif hours_left < 168:  # within a week
+                        score += 15
+                except Exception:
+                    pass
+            return score
+
+        deals.sort(key=_deal_score, reverse=True)
+        return deals[:limit]
+
     except Exception as e:
         logger.error(f"Deal search failed: {e}")
         return []
@@ -474,15 +609,19 @@ def format_deals_for_prompt(deals: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_deals_for_whatsapp(deals: list[dict]) -> str:
+def format_deals_for_whatsapp(deals: list[dict], query_type: str = "all") -> str:
     """Format deals as a WhatsApp-friendly message for browsing."""
     if not deals:
+        if query_type == "today":
+            return "No deals expiring today. Check *'show deals'* for everything active! 🙏"
         return "No active deals found in that area right now. Check back soon! 🙏"
 
-    lines = ["🔥 *Active Deals & Promotions* 🔥\n"]
+    header = "🔥 *Today's Deals*\n" if query_type == "today" else "🔥 *Active Deals & Promotions* 🔥\n"
+    lines = [header]
     for i, d in enumerate(deals, 1):
         expires = d.get("expires_at", "")
         expire_str = ""
+        freshness = ""
         if expires:
             try:
                 exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
@@ -491,13 +630,28 @@ def format_deals_for_whatsapp(deals: list[dict]) -> str:
                     expire_str = "⏰ Expires today!"
                 elif days_left == 1:
                     expire_str = "⏰ 1 day left"
+                elif days_left <= 3:
+                    expire_str = f"⏰ {days_left} days left"
                 else:
                     expire_str = f"⏰ {days_left} days left"
             except Exception:
                 pass
+        # Freshness badge
+        created = d.get("created_at", "")
+        if created:
+            try:
+                cr_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - cr_dt).days
+                if age_days <= 1:
+                    freshness = "🆕 "
+                elif age_days <= 7:
+                    freshness = "🔥 "
+            except Exception:
+                pass
         expire_line = f"\n   {expire_str}" if expire_str else ""
+        featured = " ⭐" if d.get("is_featured_business") else ""
         lines.append(
-            f"*{i}. {d['title']}*\n"
+            f"*{i}. {freshness}{d['title']}*{featured}\n"
             f"   🏪 {d['business_name']}\n"
             f"   📝 {d['description']}\n"
             f"   📍 {d.get('city', '')}, {d.get('state', '')}"
@@ -505,3 +659,67 @@ def format_deals_for_whatsapp(deals: list[dict]) -> str:
         )
     lines.append("Want to post your own deal? Say *'post a deal'*!")
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════
+# AUTO-EXPIRY + RE-ENGAGEMENT
+# ══════════════════════════════════════════════════════════════════
+
+async def expire_stale_deals(settings: Settings) -> dict:
+    """
+    Mark expired deals as inactive and notify business owners.
+    Called daily by APScheduler cron.
+    """
+    from app.services.whatsapp_service import WhatsAppService
+
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Find expired deals that are still active
+        expired = (
+            client.table("deals")
+            .select("id, title, business_name, business_id, posted_by_wa_id")
+            .eq("is_active", True)
+            .lt("expires_at", now)
+            .execute()
+        )
+
+        if not expired.data:
+            return {"expired": 0, "notified": 0}
+
+        # Batch deactivate
+        expired_ids = [d["id"] for d in expired.data]
+        for deal_id in expired_ids:
+            client.table("deals").update({"is_active": False}).eq("id", deal_id).execute()
+
+        # Notify business owners (re-engagement)
+        whatsapp = WhatsAppService(settings)
+        notified = 0
+        seen_owners: set[str] = set()
+
+        for d in expired.data:
+            owner_wa = d.get("posted_by_wa_id", "")
+            if not owner_wa or owner_wa in seen_owners:
+                continue
+            seen_owners.add(owner_wa)
+
+            msg = (
+                f"⏰ Your deal *{d['title']}* for *{d['business_name']}* has expired.\n\n"
+                "Want to keep the momentum going?\n"
+                "👉 Reply *\"post a deal\"* to create a new one\n"
+                "👉 Reply *\"my stats\"* to see your performance"
+            )
+            try:
+                await whatsapp.send_text_message(owner_wa, msg)
+                notified += 1
+            except Exception as e:
+                logger.warning(f"Failed to notify {owner_wa} about expired deal: {e}")
+
+        summary = {"expired": len(expired_ids), "notified": notified}
+        logger.info(f"Deal expiry run: {summary}")
+        return summary
+
+    except Exception as e:
+        logger.error(f"Deal expiry cron failed: {e}")
+        return {"error": str(e)}

@@ -192,6 +192,12 @@ async def handle_message(
             whatsapp = WhatsAppService(settings)
             await whatsapp.send_text_message(wa_id, response_text)
             return {"status": "ok"}
+        elif deal_intent == "browse_today":
+            deals = search_deals(message_body, settings, limit=5, today_only=True)
+            response_text = format_deals_for_whatsapp(deals, query_type="today")
+            whatsapp = WhatsAppService(settings)
+            await whatsapp.send_text_message(wa_id, response_text)
+            return {"status": "ok"}
         elif deal_intent == "browse":
             deals = search_deals(message_body, settings, limit=5)
             response_text = format_deals_for_whatsapp(deals)
