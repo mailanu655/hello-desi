@@ -309,10 +309,20 @@ def _extract_category_filter(message: str) -> str | None:
     return None
 
 
+_KEYWORD_STOPWORDS = {
+    "in", "near", "around", "show", "find", "deals", "deal",
+    "offers", "offer", "discounts", "discount", "coupons", "coupon",
+    "promotions", "promotion", "promos", "promo", "sales", "sale",
+    "me", "the", "a", "an", "for", "at", "of", "my", "all",
+    "any", "browse", "latest", "current", "list", "today",
+    "todays", "what", "whats", "on", "with",
+}
+
+
 def _extract_keyword(message: str) -> str | None:
     """
     Extract a search keyword from the deal query after stripping
-    city/state and known category terms. Returns None if nothing useful.
+    city/state, category terms, and stopwords. Returns None if nothing useful.
     """
     msg = message.lower().strip()
     # Strip common preamble phrases
@@ -334,7 +344,9 @@ def _extract_keyword(message: str) -> str | None:
     cat = _extract_category_filter(message)
     if cat:
         msg = msg.replace(cat.lower(), "")
-    keyword = msg.strip().strip(",").strip()
+    # Strip stopwords
+    words = [w for w in msg.split() if w.strip(",.!?") not in _KEYWORD_STOPWORDS]
+    keyword = " ".join(words).strip().strip(",").strip()
     if len(keyword) >= 3:
         return keyword
     return None
@@ -386,6 +398,24 @@ def _set_cached_deals(cache_key: str, deals: list[dict], settings: Settings) -> 
         r.setex(cache_key, _SEARCH_CACHE_TTL, json.dumps(deals, default=str))
     except Exception:
         pass
+
+
+def _invalidate_deal_cache(city: str | None, settings: Settings) -> None:
+    """
+    Bust deal search cache after insert/delete/boost.
+    Deletes all cache keys matching the city (or all if city unknown).
+    """
+    from app.services.session_store import _get_redis
+    r = _get_redis(settings)
+    if not r:
+        return
+    try:
+        pattern = f"deals_cache:{city or ''}:*" if city else "deals_cache:*"
+        keys = r.keys(pattern)
+        if keys:
+            r.delete(*keys)
+    except Exception:
+        pass  # Best-effort
 
 
 # ── Start deal posting flow ─────────────────────────────────────
@@ -831,6 +861,9 @@ def _insert_deal(session: dict, settings: Settings) -> str:
         _del(wa_id, settings)
         logger.info(f"Deal posted by {wa_id}: {data['title']} for {b['name']}")
 
+        # Bust search cache so new deal appears immediately
+        _invalidate_deal_cache(b.get("city"), settings)
+
         # Audit log
         _log_deal_event("deal_posted", wa_id, {
             "business_id": b["id"],
@@ -956,9 +989,27 @@ def search_deals(
             except Exception:
                 pass
 
-        # ── Smooth urgency curve ──
+        # ── Scoring with boost + featured + urgency ──
         def _deal_score(deal: dict) -> float:
             score = 0.0
+
+            # Boosted deal (+80, only if boost hasn't expired)
+            boost_until = deal.get("boosted_until", "")
+            if boost_until:
+                try:
+                    boost_dt = datetime.fromisoformat(boost_until.replace("Z", "+00:00"))
+                    if boost_dt > now:
+                        score += 80
+                        deal["is_boosted"] = True
+                        # Calculate hours remaining for display
+                        deal["boost_hours_left"] = round((boost_dt - now).total_seconds() / 3600, 1)
+                    else:
+                        deal["is_boosted"] = False
+                except Exception:
+                    deal["is_boosted"] = False
+            else:
+                deal["is_boosted"] = False
+
             # Featured boost (+100)
             if deal.get("business_id") in featured_ids:
                 score += 100
@@ -1077,8 +1128,16 @@ def format_deals_for_whatsapp(deals: list[dict], query_type: str = "all") -> str
                 pass
         expire_line = f"\n   {expire_str}" if expire_str else ""
         featured = " ⭐" if d.get("is_featured_business") else ""
+        # Boost badge + countdown
+        boost_badge = ""
+        if d.get("is_boosted"):
+            hours_left = d.get("boost_hours_left", 0)
+            if hours_left > 1:
+                boost_badge = f" 🚀 BOOSTED ({int(hours_left)}h left)"
+            else:
+                boost_badge = " 🚀 BOOSTED"
         lines.append(
-            f"*{i}. {freshness}{d['title']}*{featured}\n"
+            f"*{i}. {freshness}{d['title']}*{featured}{boost_badge}\n"
             f"   🏪 {d['business_name']}\n"
             f"   📝 {d['description']}\n"
             f"   📍 {d.get('city', '')}, {d.get('state', '')}"
@@ -1149,6 +1208,9 @@ def delete_deal(wa_id: str, deal_title_or_idx: str, settings: Settings) -> str:
         # Deactivate the deal (soft delete)
         client.table("deals").update({"is_active": False}).eq("id", target["id"]).execute()
 
+        # Bust search cache
+        _invalidate_deal_cache(None, settings)  # city unknown here, bust all
+
         _log_deal_event("deal_deleted", wa_id, {
             "deal_id": target["id"],
             "deal_title": target["title"],
@@ -1172,6 +1234,126 @@ def detect_delete_deal_intent(message: str) -> bool:
         "delete deal", "remove deal", "delete my deal",
         "remove my deal", "cancel deal", "cancel my deal",
     ])
+
+
+# ── Boost deal ────────────────────────────────────────────────
+def detect_boost_intent(message: str) -> bool:
+    """Check if user wants to boost a deal."""
+    msg = message.lower().strip()
+    return msg in ("boost", "boost deal", "boost my deal")
+
+
+def boost_deal(wa_id: str, settings: Settings) -> str:
+    """
+    Mark the user's most recent deal as boosted for 24 hours.
+    In production, this would integrate with Stripe payment link first.
+    For now, marks the deal and returns a payment CTA.
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Find the most recent active deal by this user
+        result = (
+            client.table("deals")
+            .select("id, title, business_name, city, boosted_until")
+            .eq("posted_by_wa_id", wa_id)
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return (
+                "You don't have any active deals to boost.\n"
+                "Post a deal first with *\"post a deal\"*"
+            )
+
+        deal = result.data[0]
+        now = datetime.now(timezone.utc)
+
+        # Check if already boosted
+        if deal.get("boosted_until"):
+            try:
+                boost_dt = datetime.fromisoformat(deal["boosted_until"].replace("Z", "+00:00"))
+                if boost_dt > now:
+                    hours_left = round((boost_dt - now).total_seconds() / 3600, 1)
+                    return (
+                        f"Your deal *{deal['title']}* is already boosted! 🚀\n"
+                        f"⏰ {hours_left} hours remaining\n\n"
+                        "It's appearing at the top of search results."
+                    )
+            except Exception:
+                pass
+
+        # Mark as boosted (24 hours)
+        boost_until = (now + timedelta(hours=24)).isoformat()
+        client.table("deals").update({
+            "boosted_until": boost_until,
+        }).eq("id", deal["id"]).execute()
+
+        # Bust cache so boosted deal shows up immediately
+        _invalidate_deal_cache(deal.get("city"), settings)
+
+        _log_deal_event("deal_boosted", wa_id, {
+            "deal_id": deal["id"],
+            "deal_title": deal["title"],
+            "business_name": deal["business_name"],
+            "boost_until": boost_until,
+        }, settings)
+
+        return (
+            f"🚀 *{deal['title']}* is now boosted for 24 hours!\n\n"
+            "Your deal will appear at the top of search results "
+            "and in the daily digest.\n\n"
+            "⏰ Boost expires tomorrow at this time.\n\n"
+            "💳 *$5 boost fee* — payment link coming to your WhatsApp shortly."
+        )
+
+    except Exception as e:
+        logger.error(f"Deal boost failed for {wa_id}: {e}")
+        return "Sorry, something went wrong. Please try again. 🙏"
+
+
+# ── Pagination state helpers ──────────────────────────────────
+def get_user_deal_offset(wa_id: str, settings: Settings) -> int:
+    """Get the current pagination offset for this user's deal browsing."""
+    from app.services.session_store import _get_redis
+    r = _get_redis(settings)
+    if not r:
+        return 0
+    try:
+        val = r.get(f"deal_offset:{wa_id}")
+        return int(val) if val else 0
+    except Exception:
+        return 0
+
+
+def increment_user_deal_offset(wa_id: str, settings: Settings, step: int = 5) -> int:
+    """Increment and return the new offset for "more deals" pagination."""
+    from app.services.session_store import _get_redis
+    r = _get_redis(settings)
+    if not r:
+        return step
+    try:
+        key = f"deal_offset:{wa_id}"
+        new_val = r.incrby(key, step)
+        r.expire(key, 600)  # 10 min TTL — resets after inactivity
+        return new_val
+    except Exception:
+        return step
+
+
+def reset_user_deal_offset(wa_id: str, settings: Settings) -> None:
+    """Reset pagination offset (called on new browse query)."""
+    from app.services.session_store import _get_redis
+    r = _get_redis(settings)
+    if not r:
+        return
+    try:
+        r.delete(f"deal_offset:{wa_id}")
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════
