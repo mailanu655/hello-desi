@@ -17,12 +17,11 @@ Production safeguards:
   - Signature verification on every request
   - Idempotency: duplicate events are safely skipped
   - Unknown amounts logged but never crash
-  - Unmatched payments logged + fallback WhatsApp message sent
+  - Unmatched payments auto-reconciled by email or alerted via Slack
 """
 
 import json
 import logging
-import uuid
 
 import stripe
 from fastapi import APIRouter, HTTPException, Request
@@ -524,31 +523,20 @@ def _amount_to_plan(amount_cents: int) -> str | None:
 
 
 async def _send_admin_alert(message: str, settings):
-    """Send a Slack alert to the admin channel. Silently fails if not configured."""
-    slack_token = getattr(settings, "SLACK_BOT_TOKEN", "")
-    slack_channel = getattr(settings, "SLACK_ALERT_CHANNEL", "")
-    if not slack_token or not slack_channel:
-        logger.info("Admin alert skipped (SLACK_BOT_TOKEN or SLACK_ALERT_CHANNEL not configured)")
+    """Send a Slack alert via incoming webhook. Silently fails if not configured."""
+    slack_url = getattr(settings, "SLACK_WEBHOOK_URL", "")
+    if not slack_url:
+        logger.info("Admin alert skipped (SLACK_WEBHOOK_URL not configured)")
         return
 
     try:
         import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://slack.com/api/chat.postMessage",
-                headers={"Authorization": f"Bearer {slack_token}"},
-                json={
-                    "channel": slack_channel,
-                    "text": message,
-                    "unfurl_links": False,
-                },
-                timeout=10,
-            )
-            data = resp.json()
-            if data.get("ok"):
-                logger.info(f"Admin alert sent to Slack channel {slack_channel}")
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(slack_url, json={"text": message}, timeout=10)
+            if resp.status_code == 200 and resp.text == "ok":
+                logger.info("Admin alert sent to Slack")
             else:
-                logger.warning(f"Slack alert failed: {data.get('error')}")
+                logger.warning(f"Slack alert failed: {resp.status_code} {resp.text}")
     except Exception as e:
         logger.warning(f"Failed to send admin alert to Slack: {e}")
 

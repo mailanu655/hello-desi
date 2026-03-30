@@ -51,8 +51,7 @@ class Settings(BaseSettings):
     STRIPE_PREMIUM_LINK: str = ""
 
     # --- Admin / Alerts ---
-    SLACK_BOT_TOKEN: str = ""      # Slack Bot OAuth token (xoxb-...)
-    SLACK_ALERT_CHANNEL: str = ""  # Slack channel ID for admin alerts
+    SLACK_WEBHOOK_URL: str = ""  # Slack incoming webhook URL for #stripe-alerts
 
     # --- App Config ---
     DEBUG: bool = False
