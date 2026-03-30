@@ -143,8 +143,6 @@ async def generate_response(
         The formatted response string
     """
     try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-
         # Build messages array with conversation history
         messages = []
 
@@ -155,6 +153,7 @@ async def generate_response(
 
         # Use Haiku for most queries (fast + cheap)
         model = "claude-haiku-4-5-20251001"
+        api_timeout = 8.0  # seconds — Haiku is fast
 
         # Escalate to Sonnet for complex topics
         complex_keywords = [
@@ -164,7 +163,13 @@ async def generate_response(
         ]
         if any(kw in message.lower() for kw in complex_keywords):
             model = "claude-sonnet-4-5-20241022"
+            api_timeout = 15.0  # Sonnet needs more time
             logger.info(f"Escalating to Sonnet for complex query from {wa_id}")
+
+        client = anthropic.Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY,
+            timeout=api_timeout,
+        )
 
         # Look up relevant businesses from our database
         business_context = ""

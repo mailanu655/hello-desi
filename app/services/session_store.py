@@ -156,6 +156,77 @@ def message_seen(message_id: str, settings: Settings) -> bool:
         return False
 
 
+def acquire_user_lock(wa_id: str, settings: Settings, ttl: int = 10) -> bool:
+    """
+    Acquire a per-user processing lock to prevent race conditions.
+
+    Uses Redis SETNX for atomic lock acquisition. If the lock already exists
+    (another request is processing for this user), returns False.
+
+    The lock auto-expires after `ttl` seconds as a safety net.
+
+    Returns True if lock acquired, False if another request holds it.
+    """
+    key = f"lock:{wa_id}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            acquired = r.set(key, "1", nx=True, ex=ttl)
+            return bool(acquired)
+        except Exception as e:
+            logger.warning(f"Redis lock acquire failed for {wa_id}: {e}")
+            return True  # On failure, allow processing (don't block user)
+    else:
+        # In-memory: no real locking needed (single process)
+        return True
+
+
+def release_user_lock(wa_id: str, settings: Settings) -> None:
+    """Release the per-user processing lock."""
+    key = f"lock:{wa_id}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            r.delete(key)
+        except Exception as e:
+            logger.warning(f"Redis lock release failed for {wa_id}: {e}")
+
+    # Also clean up fallback
+    _fallback_store.pop(key, None)
+
+
+def check_rate_limit_atomic(wa_id: str, daily_limit: int, settings: Settings) -> bool:
+    """
+    Atomic rate limit check using Redis INCR.
+
+    Returns True if user is WITHIN limits (allowed), False if rate-limited.
+    Uses a key that auto-expires at midnight UTC (or after 24h).
+
+    This replaces the read-then-write pattern in Supabase which had a race condition.
+    Falls back to allowing the request if Redis is unavailable.
+    """
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"rate:{wa_id}:{today}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            count = r.incr(key)
+            if count == 1:
+                # First message today — set TTL to 24 hours
+                r.expire(key, 86400)
+            return count <= daily_limit
+        except Exception as e:
+            logger.warning(f"Redis rate limit failed for {wa_id}: {e}")
+            return True  # On failure, allow
+    else:
+        return True  # No Redis = no atomic rate limit, fall back to Supabase check
+
+
 def session_exists(key: str, settings: Settings) -> bool:
     """Check if a session exists (without refreshing TTL)."""
     r = _get_redis(settings)
