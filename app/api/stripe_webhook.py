@@ -12,10 +12,17 @@ Events handled:
   - customer.subscription.updated → Handle plan changes
   - customer.subscription.deleted → Downgrade to free
   - invoice.payment_failed       → Notify owner of payment failure
+
+Production safeguards:
+  - Signature verification on every request
+  - Idempotency: duplicate events are safely skipped
+  - Unknown amounts logged but never crash
+  - Unmatched payments logged + fallback WhatsApp message sent
 """
 
 import json
 import logging
+import uuid
 
 import stripe
 from fastapi import APIRouter, HTTPException, Request
@@ -57,24 +64,30 @@ async def stripe_webhook(request: Request):
 
     # Parse raw JSON for data access (avoids StripeObject .get() issues)
     event = json.loads(payload)
+    event_id = event.get("id", "unknown")
     event_type = event["type"]
     data = event["data"]["object"]
 
-    logger.info(f"Stripe webhook received: {event_type} (id={event.get('id', '?')})")
+    logger.info(f"Stripe webhook received: {event_type} (id={event_id})")
+
+    # ── Idempotency: skip already-processed events ────────────────
+    if await _is_event_already_processed(event_id, settings):
+        logger.info(f"Stripe webhook: duplicate event {event_id} — skipping")
+        return {"status": "ok", "message": "duplicate event skipped"}
 
     # ── Route events ─────────────────────────────────────────────
     try:
         if event_type == "checkout.session.completed":
-            await _handle_checkout_completed(data, settings)
+            await _handle_checkout_completed(data, event_id, settings)
 
         elif event_type == "customer.subscription.updated":
-            await _handle_subscription_updated(data, settings)
+            await _handle_subscription_updated(data, event_id, settings)
 
         elif event_type == "customer.subscription.deleted":
-            await _handle_subscription_deleted(data, settings)
+            await _handle_subscription_deleted(data, event_id, settings)
 
         elif event_type == "invoice.payment_failed":
-            await _handle_payment_failed(data, settings)
+            await _handle_payment_failed(data, event_id, settings)
 
         else:
             logger.info(f"Stripe webhook: unhandled event type {event_type}")
@@ -88,15 +101,70 @@ async def stripe_webhook(request: Request):
 
 
 # ══════════════════════════════════════════════════════════════════
+# Idempotency
+# ══════════════════════════════════════════════════════════════════
+
+async def _is_event_already_processed(event_id: str, settings) -> bool:
+    """Check if this Stripe event ID was already processed."""
+    if not event_id or event_id == "unknown":
+        return False
+
+    try:
+        from supabase import create_client
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("stripe_events")
+            .select("id")
+            .eq("id", event_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(result.data)
+    except Exception as e:
+        logger.warning(f"Idempotency check failed: {e}")
+        return False  # Proceed if check fails (better to double-process than drop)
+
+
+async def _log_stripe_event(
+    event_id: str, event_type: str, settings,
+    stripe_subscription_id: str = "",
+    customer_email: str = "",
+    customer_name: str = "",
+    plan: str = "",
+    amount_cents: int = 0,
+    raw_data: dict = None,
+):
+    """Log a Stripe event to the stripe_events table for tracking and idempotency."""
+    try:
+        from supabase import create_client
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        client.table("stripe_events").insert({
+            "id": event_id,
+            "event_type": event_type,
+            "stripe_subscription_id": stripe_subscription_id,
+            "customer_email": customer_email,
+            "customer_name": customer_name,
+            "plan": plan,
+            "amount_cents": amount_cents,
+            "raw_data": raw_data or {},
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Failed to log stripe event {event_id}: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════
 # Event handlers
 # ══════════════════════════════════════════════════════════════════
 
-async def _handle_checkout_completed(session: dict, settings):
+async def _handle_checkout_completed(session: dict, event_id: str, settings):
     """
     A customer completed a Stripe Checkout session (payment link).
 
-    We use the customer email or metadata to find the business,
-    then activate their subscription.
+    Flow:
+    1. Extract customer info and determine plan from amount
+    2. Try to match existing subscription by stripe_subscription_id
+    3. If matched → activate subscription + send confirmation
+    4. If not matched → log event + send fallback WhatsApp message
     """
     from supabase import create_client
 
@@ -115,62 +183,102 @@ async def _handle_checkout_completed(session: dict, settings):
     plan = _amount_to_plan(amount_total)
 
     if not plan:
-        logger.warning(f"Could not determine plan from amount {amount_total}")
+        logger.warning(f"Unknown plan amount {amount_total} cents — logging event only")
+        await _log_stripe_event(
+            event_id, "checkout.session.completed", settings,
+            stripe_subscription_id=subscription_id or "",
+            customer_email=customer_email,
+            customer_name=customer_name,
+            plan="unknown",
+            amount_cents=amount_total,
+            raw_data={"session_id": session.get("id"), "payment_status": session.get("payment_status")},
+        )
         return
 
-    # Store the Stripe subscription in our subscriptions table
-    # We'll match by customer_email → business owner's email or wa_id
     client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-    # Try to find a pending/active subscription that matches
-    # First try by Stripe customer email → user_state (if they registered with email)
-    # For now, log the payment and mark any matching pending subscription as paid
+    # Try to find and activate an existing subscription
+    activated = False
     if subscription_id:
-        # Update any existing subscription with this Stripe subscription ID
         existing = (
             client.table("subscriptions")
-            .select("*")
+            .select("*, businesses(name)")
             .eq("stripe_subscription_id", subscription_id)
             .limit(1)
             .execute()
         )
 
         if existing.data:
+            sub = existing.data[0]
             client.table("subscriptions").update({
                 "status": "active",
                 "stripe_status": "active",
                 "plan": plan,
             }).eq("stripe_subscription_id", subscription_id).execute()
-            logger.info(f"Updated existing subscription {subscription_id} → {plan}")
-            return
 
-    # Log the payment for manual reconciliation if no match found
-    logger.info(
-        f"Stripe payment logged (no auto-match): "
-        f"email={customer_email}, plan={plan}, stripe_sub={subscription_id}"
+            # Mark business as featured if on featured/premium plan
+            if sub.get("business_id") and plan in ("featured", "premium"):
+                client.table("businesses").update({
+                    "is_featured": True
+                }).eq("id", sub["business_id"]).execute()
+
+            logger.info(f"Activated subscription {subscription_id} → {plan}")
+            activated = True
+
+            # Send post-payment confirmation via WhatsApp
+            if sub.get("wa_id"):
+                biz_name = (sub.get("businesses") or {}).get("name", "your business")
+                await _send_activation_confirmation(sub["wa_id"], plan, biz_name, settings)
+
+    # If no match found, try to match by customer email → user_state
+    if not activated and customer_email:
+        # Look up user by email in user_state to find their wa_id
+        user_result = (
+            client.table("user_state")
+            .select("wa_id")
+            .eq("email", customer_email)
+            .limit(1)
+            .execute()
+        )
+
+        wa_id = user_result.data[0]["wa_id"] if user_result.data else None
+
+        if wa_id:
+            # Send fallback acknowledgment
+            from app.services.whatsapp_service import WhatsAppService
+            whatsapp = WhatsAppService(settings)
+            plan_labels = {"featured": "⭐ Featured", "premium": "👑 Premium"}
+            await whatsapp.send_text_message(
+                wa_id,
+                f"We received your payment for *{plan_labels.get(plan, plan)}* 👍\n\n"
+                "Setting up your plan now...\n"
+                "If you don't see updates in a few minutes, reply *\"help\"*."
+            )
+            logger.info(f"Sent fallback payment acknowledgment to {wa_id}")
+
+    # Log the event (also serves as idempotency marker)
+    await _log_stripe_event(
+        event_id, "checkout.session.completed", settings,
+        stripe_subscription_id=subscription_id or "",
+        customer_email=customer_email,
+        customer_name=customer_name,
+        plan=plan,
+        amount_cents=amount_total,
+        raw_data={
+            "session_id": session.get("id"),
+            "payment_status": session.get("payment_status"),
+            "activated": activated,
+        },
     )
 
-    # Store payment event for tracking
-    try:
-        import uuid
-        client.table("stripe_events").insert({
-            "id": str(uuid.uuid4()),
-            "event_type": "checkout.session.completed",
-            "stripe_subscription_id": subscription_id or "",
-            "customer_email": customer_email or "",
-            "customer_name": customer_name or "",
-            "plan": plan,
-            "amount_cents": amount_total,
-            "raw_data": {
-                "session_id": session.get("id"),
-                "payment_status": session.get("payment_status"),
-            },
-        }).execute()
-    except Exception as e:
-        logger.warning(f"Failed to log stripe event: {e}")
+    if not activated:
+        logger.info(
+            f"Payment logged (no auto-match): "
+            f"email={customer_email}, plan={plan}, stripe_sub={subscription_id}"
+        )
 
 
-async def _handle_subscription_updated(subscription: dict, settings):
+async def _handle_subscription_updated(subscription: dict, event_id: str, settings):
     """Handle subscription plan changes (upgrade/downgrade)."""
     from supabase import create_client
 
@@ -202,13 +310,17 @@ async def _handle_subscription_updated(subscription: dict, settings):
 
         if status in ("active", "trialing"):
             updates["status"] = "active"
+            # Ensure featured badge
+            if sub.get("business_id") and plan in ("featured", "premium"):
+                client.table("businesses").update({
+                    "is_featured": True
+                }).eq("id", sub["business_id"]).execute()
         elif status in ("past_due", "unpaid"):
             updates["status"] = "active"  # Keep active but flag
             logger.warning(f"Subscription {stripe_sub_id} is {status}")
         elif status == "canceled":
             updates["status"] = "canceled"
             updates["plan"] = "free"
-            # Also remove featured badge
             if sub.get("business_id"):
                 client.table("businesses").update({
                     "is_featured": False
@@ -220,17 +332,19 @@ async def _handle_subscription_updated(subscription: dict, settings):
 
         # Notify business owner via WhatsApp
         if sub.get("wa_id") and status == "active" and plan:
-            from app.services.whatsapp_service import WhatsAppService
-            whatsapp = WhatsAppService(settings)
-            plan_labels = {"featured": "⭐ Featured", "premium": "👑 Premium"}
-            await whatsapp.send_text_message(
-                sub["wa_id"],
-                f"Your *{plan_labels.get(plan, plan)}* subscription is confirmed! 🎉\n"
-                f"Your business is now live with premium features."
-            )
+            biz_name = (sub.get("businesses") or {}).get("name", "your business")
+            await _send_activation_confirmation(sub["wa_id"], plan, biz_name, settings)
+
+    # Log event
+    await _log_stripe_event(
+        event_id, "customer.subscription.updated", settings,
+        stripe_subscription_id=stripe_sub_id or "",
+        plan=plan or "",
+        raw_data={"status": status},
+    )
 
 
-async def _handle_subscription_deleted(subscription: dict, settings):
+async def _handle_subscription_deleted(subscription: dict, event_id: str, settings):
     """Handle subscription cancellation — downgrade to free."""
     from supabase import create_client
 
@@ -275,13 +389,27 @@ async def _handle_subscription_deleted(subscription: dict, settings):
 
         logger.info(f"Downgraded business {sub.get('business_id')} to free")
 
+    # Log event
+    await _log_stripe_event(
+        event_id, "customer.subscription.deleted", settings,
+        stripe_subscription_id=stripe_sub_id or "",
+        plan="free",
+    )
 
-async def _handle_payment_failed(invoice: dict, settings):
+
+async def _handle_payment_failed(invoice: dict, event_id: str, settings):
     """Notify business owner that their payment failed."""
     stripe_sub_id = invoice.get("subscription")
     customer_email = invoice.get("customer_email", "")
 
     logger.warning(f"Payment failed: sub={stripe_sub_id}, email={customer_email}")
+
+    # Log event
+    await _log_stripe_event(
+        event_id, "invoice.payment_failed", settings,
+        stripe_subscription_id=stripe_sub_id or "",
+        customer_email=customer_email,
+    )
 
     if not stripe_sub_id:
         return
@@ -312,7 +440,45 @@ async def _handle_payment_failed(invoice: dict, settings):
         )
 
 
-# ── Helpers ──────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# Helpers
+# ══════════════════════════════════════════════════════════════════
+
+async def _send_activation_confirmation(wa_id: str, plan: str, biz_name: str, settings):
+    """Send a rich post-payment confirmation via WhatsApp."""
+    from app.services.whatsapp_service import WhatsAppService
+    whatsapp = WhatsAppService(settings)
+
+    plan_benefits = {
+        "featured": (
+            f"🎉 *{biz_name}* is now *⭐ Featured*!\n\n"
+            "Your business will:\n"
+            "• Appear first in search results\n"
+            "• Show in the daily digest\n"
+            "• Get a ⭐ badge on your listing\n"
+            "• Attract more leads\n\n"
+            "Let's grow your business 🚀"
+        ),
+        "premium": (
+            f"🎉 *{biz_name}* is now *👑 Premium*!\n\n"
+            "Your business will:\n"
+            "• Appear first in search results\n"
+            "• Show in the daily digest\n"
+            "• Get a 👑 badge on your listing\n"
+            "• Post unlimited deals & promotions\n"
+            "• Get detailed lead analytics\n\n"
+            "Let's grow your business 🚀"
+        ),
+    }
+
+    message = plan_benefits.get(plan, f"Your *{biz_name}* subscription is confirmed! 🎉")
+
+    try:
+        await whatsapp.send_text_message(wa_id, message)
+        logger.info(f"Sent activation confirmation to {wa_id} for plan={plan}")
+    except Exception as e:
+        logger.warning(f"Failed to send activation confirmation: {e}")
+
 
 def _amount_to_plan(amount_cents: int) -> str | None:
     """Map Stripe amount (in cents) to our plan name."""
