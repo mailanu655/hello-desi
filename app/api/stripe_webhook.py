@@ -20,8 +20,11 @@ Production safeguards:
   - Unmatched payments auto-reconciled by email or alerted via Slack
 """
 
+import hashlib
+import hmac
 import json
 import logging
+import time
 
 import stripe
 from fastapi import APIRouter, HTTPException, Request
@@ -29,6 +32,52 @@ from config.settings import get_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Stripe allows up to 5 minutes tolerance for webhook timestamps
+STRIPE_TIMESTAMP_TOLERANCE = 300
+
+
+def _verify_stripe_signature(payload: bytes, sig_header: str, secret: str) -> bool:
+    """
+    Manually verify Stripe webhook signature using HMAC-SHA256.
+
+    This avoids Stripe SDK v8+ issues where construct_event() crashes
+    internally on StripeObject attribute access.
+    """
+    if not sig_header or not secret:
+        return False
+
+    try:
+        # Parse the signature header: "t=123,v1=abc,v1=def"
+        timestamp = ""
+        signatures = []
+        for part in sig_header.split(","):
+            key, _, value = part.partition("=")
+            if key == "t":
+                timestamp = value
+            elif key == "v1":
+                signatures.append(value)
+
+        if not timestamp or not signatures:
+            return False
+
+        # Check timestamp tolerance
+        if abs(time.time() - int(timestamp)) > STRIPE_TIMESTAMP_TOLERANCE:
+            logger.warning("Stripe webhook: timestamp outside tolerance")
+            return False
+
+        # Compute expected signature
+        signed_payload = f"{timestamp}.".encode() + payload
+        expected = hmac.new(
+            secret.encode("utf-8"), signed_payload, hashlib.sha256
+        ).hexdigest()
+
+        # Compare against all v1 signatures
+        return any(hmac.compare_digest(expected, sig) for sig in signatures)
+
+    except Exception as e:
+        logger.warning(f"Stripe signature verification failed: {e}")
+        return False
 
 
 @router.post("/stripe/webhook")
@@ -49,15 +98,8 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
-    # Verify signature using Stripe SDK
-    try:
-        stripe.Webhook.construct_event(
-            payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
-        )
-    except ValueError:
-        logger.warning("Stripe webhook: invalid payload")
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
+    # Verify signature manually (avoids Stripe SDK v8+ StripeObject issues)
+    if not _verify_stripe_signature(payload, sig_header, settings.STRIPE_WEBHOOK_SECRET):
         logger.warning("Stripe webhook: invalid signature")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
