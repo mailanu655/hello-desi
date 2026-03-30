@@ -83,12 +83,17 @@ async def expire_deals(
     Deactivate expired deals and notify business owners.
     Called by cron daily at 6am EST (before digest).
     """
-    from app.services.deals_service import expire_stale_deals
+    from app.services.deals_service import expire_stale_deals, cleanup_orphan_deals
 
     logger.info("Starting deal expiry run...")
     summary = await expire_stale_deals(settings)
     logger.info(f"Deal expiry run complete: {summary}")
-    return {"status": "ok", "summary": summary}
+
+    logger.info("Starting orphan deal cleanup...")
+    orphan_summary = await cleanup_orphan_deals(settings)
+    logger.info(f"Orphan cleanup complete: {orphan_summary}")
+
+    return {"status": "ok", "summary": summary, "orphan_cleanup": orphan_summary}
 
 
 @router.get("/tasks/analytics", dependencies=[Depends(verify_cron_secret)])

@@ -272,6 +272,9 @@ async def _process_message(
 
         from app.services.deals_service import (
             detect_deal_intent,
+            detect_more_deals_intent,
+            detect_delete_deal_intent,
+            delete_deal,
             has_active_deal_session,
             handle_deal_message,
             start_deal_flow,
@@ -352,6 +355,26 @@ async def _process_message(
             logger.info(f"[{request_id}] Browsing deals for {wa_id}")
             deals = search_deals(message_body, settings, limit=5)
             response_text = format_deals_for_whatsapp(deals)
+            await _wa().send_text_message(wa_id, response_text)
+            return
+
+        # "More deals" pagination
+        if detect_more_deals_intent(message_body):
+            logger.info(f"[{request_id}] Showing more deals for {wa_id}")
+            deals = search_deals(message_body, settings, limit=5, offset=5)
+            if not deals:
+                await _wa().send_text_message(wa_id, "No more deals to show right now. Try a different area or category! 🙏")
+            else:
+                response_text = format_deals_for_whatsapp(deals)
+                await _wa().send_text_message(wa_id, response_text)
+            return
+
+        # Deal deletion
+        if detect_delete_deal_intent(message_body):
+            logger.info(f"[{request_id}] Deal deletion request from {wa_id}")
+            # Pass everything after the trigger phrase as search term
+            search_term = message_body.lower().replace("delete deal", "").replace("remove deal", "").replace("delete my deal", "").replace("remove my deal", "").replace("cancel deal", "").replace("cancel my deal", "").strip()
+            response_text = delete_deal(wa_id, search_term, settings)
             await _wa().send_text_message(wa_id, response_text)
             return
 
