@@ -71,9 +71,12 @@ async def stripe_webhook(request: Request):
     logger.info(f"Stripe webhook received: {event_type} (id={event_id})")
 
     # ── Idempotency: skip already-processed events ────────────────
-    if await _is_event_already_processed(event_id, settings):
-        logger.info(f"Stripe webhook: duplicate event {event_id} — skipping")
-        return {"status": "ok", "message": "duplicate event skipped"}
+    previous = await _is_event_already_processed(event_id, settings)
+    if previous:
+        prev_status = previous.get("status", "unknown")
+        prev_at = previous.get("processed_at", "?")
+        logger.info(f"Stripe webhook: duplicate event {event_id} (prev={prev_status} at {prev_at}) — skipping")
+        return {"status": "ok", "message": "duplicate event skipped", "previous_status": prev_status}
 
     # ── Route events ─────────────────────────────────────────────
     try:
@@ -94,6 +97,22 @@ async def stripe_webhook(request: Request):
 
     except Exception as e:
         logger.error(f"Stripe webhook handler error for {event_type}: {e}")
+
+        # Log the failure for debugging
+        await _log_stripe_event(
+            event_id, event_type, settings,
+            raw_data={"error": str(e)},
+            status="failed",
+        )
+
+        # Alert: send failure notification to admin via WhatsApp
+        await _send_admin_alert(
+            f"⚠️ Stripe webhook *failed*\n\n"
+            f"Event: `{event_type}`\nID: `{event_id}`\n"
+            f"Error: {str(e)[:200]}",
+            settings,
+        )
+
         # Return 200 anyway so Stripe doesn't retry indefinitely
         return {"status": "error", "message": str(e)}
 
@@ -104,25 +123,32 @@ async def stripe_webhook(request: Request):
 # Idempotency
 # ══════════════════════════════════════════════════════════════════
 
-async def _is_event_already_processed(event_id: str, settings) -> bool:
-    """Check if this Stripe event ID was already processed."""
+async def _is_event_already_processed(event_id: str, settings) -> dict | None:
+    """
+    Check if this Stripe event ID was already processed.
+
+    Returns None if not yet processed, or a dict with previous processing
+    info (status, processed_at) if it was already handled.
+    """
     if not event_id or event_id == "unknown":
-        return False
+        return None
 
     try:
         from supabase import create_client
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         result = (
             client.table("stripe_events")
-            .select("id")
+            .select("id, status, processed_at")
             .eq("id", event_id)
             .limit(1)
             .execute()
         )
-        return bool(result.data)
+        if result.data:
+            return result.data[0]
+        return None
     except Exception as e:
         logger.warning(f"Idempotency check failed: {e}")
-        return False  # Proceed if check fails (better to double-process than drop)
+        return None  # Proceed if check fails (better to double-process than drop)
 
 
 async def _log_stripe_event(
@@ -133,6 +159,7 @@ async def _log_stripe_event(
     plan: str = "",
     amount_cents: int = 0,
     raw_data: dict = None,
+    status: str = "success",
 ):
     """Log a Stripe event to the stripe_events table for tracking and idempotency."""
     try:
@@ -147,6 +174,7 @@ async def _log_stripe_event(
             "plan": plan,
             "amount_cents": amount_cents,
             "raw_data": raw_data or {},
+            "status": status,
         }).execute()
     except Exception as e:
         logger.warning(f"Failed to log stripe event {event_id}: {e}")
@@ -192,6 +220,7 @@ async def _handle_checkout_completed(session: dict, event_id: str, settings):
             plan="unknown",
             amount_cents=amount_total,
             raw_data={"session_id": session.get("id"), "payment_status": session.get("payment_status")},
+            status="unknown_plan",
         )
         return
 
@@ -243,13 +272,40 @@ async def _handle_checkout_completed(session: dict, event_id: str, settings):
             "payment_status": session.get("payment_status"),
             "activated": activated,
         },
+        status="success" if activated else "unmatched",
     )
 
     if not activated:
-        logger.info(
-            f"Payment logged (no auto-match): "
-            f"email={customer_email}, plan={plan}, stripe_sub={subscription_id}"
+        # Try auto-reconciliation by email before giving up
+        reconciled = await _try_auto_reconcile(
+            customer_email, customer_name, plan, subscription_id, settings
         )
+
+        if reconciled:
+            # Update the event log status to reflect successful reconciliation
+            try:
+                from supabase import create_client
+                client2 = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+                client2.table("stripe_events").update({
+                    "status": "reconciled",
+                }).eq("id", event_id).execute()
+            except Exception:
+                pass  # Non-critical update
+            logger.info(f"Auto-reconciled payment: email={customer_email}, plan={plan}")
+        else:
+            logger.info(
+                f"Payment logged (unmatched): "
+                f"email={customer_email}, plan={plan}, stripe_sub={subscription_id}"
+            )
+            # Alert admin about unmatched payment
+            await _send_admin_alert(
+                f"💰 *Unmatched Stripe payment*\n\n"
+                f"Email: {customer_email}\nName: {customer_name}\n"
+                f"Plan: {plan}\nAmount: ${amount_total / 100:.2f}\n"
+                f"Stripe Sub: `{subscription_id or 'none'}`\n\n"
+                f"This payment could not be auto-matched to any business.",
+                settings,
+            )
 
 
 async def _handle_subscription_updated(subscription: dict, event_id: str, settings):
@@ -465,3 +521,99 @@ def _amount_to_plan(amount_cents: int) -> str | None:
     else:
         logger.warning(f"Unknown amount: {amount_cents} cents")
         return None
+
+
+async def _send_admin_alert(message: str, settings):
+    """Send a WhatsApp alert to the admin. Silently fails if ADMIN_WA_ID is not set."""
+    admin_wa_id = getattr(settings, "ADMIN_WA_ID", "")
+    if not admin_wa_id:
+        logger.info("Admin alert skipped (ADMIN_WA_ID not configured)")
+        return
+
+    try:
+        from app.services.whatsapp_service import WhatsAppService
+        whatsapp = WhatsAppService(settings)
+        await whatsapp.send_text_message(admin_wa_id, message)
+        logger.info(f"Admin alert sent to {admin_wa_id}")
+    except Exception as e:
+        logger.warning(f"Failed to send admin alert: {e}")
+
+
+async def _try_auto_reconcile(
+    customer_email: str, customer_name: str, plan: str,
+    subscription_id: str, settings,
+) -> bool:
+    """
+    Try to match an unmatched payment to a subscription by email or phone.
+
+    Looks for subscriptions where:
+    1. The business owner's email matches the payment email
+    2. The subscription has no stripe_subscription_id yet (pending activation)
+
+    Returns True if a match was found and activated.
+    """
+    if not customer_email:
+        return False
+
+    try:
+        from supabase import create_client
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Try matching by email on businesses table
+        biz_result = (
+            client.table("businesses")
+            .select("id, name, subscriptions(id, wa_id, stripe_subscription_id)")
+            .eq("email", customer_email)
+            .limit(1)
+            .execute()
+        )
+
+        if not biz_result.data:
+            return False
+
+        biz = biz_result.data[0]
+        subs = biz.get("subscriptions") or []
+
+        # Find a subscription that needs activation (no stripe_subscription_id or pending)
+        target_sub = None
+        for s in subs:
+            if not s.get("stripe_subscription_id"):
+                target_sub = s
+                break
+
+        if not target_sub:
+            return False
+
+        # Activate it
+        updates = {
+            "status": "active",
+            "stripe_status": "active",
+            "plan": plan,
+        }
+        if subscription_id:
+            updates["stripe_subscription_id"] = subscription_id
+
+        client.table("subscriptions").update(updates).eq("id", target_sub["id"]).execute()
+
+        # Mark business as featured if applicable
+        if plan in ("featured", "premium"):
+            client.table("businesses").update({
+                "is_featured": True
+            }).eq("id", biz["id"]).execute()
+
+        logger.info(
+            f"Auto-reconciled: email={customer_email} → "
+            f"business={biz['name']}, plan={plan}"
+        )
+
+        # Send confirmation
+        if target_sub.get("wa_id"):
+            await _send_activation_confirmation(
+                target_sub["wa_id"], plan, biz.get("name", "your business"), settings
+            )
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"Auto-reconciliation failed: {e}")
+        return False

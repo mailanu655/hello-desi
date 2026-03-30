@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     STRIPE_FEATURED_LINK: str = ""
     STRIPE_PREMIUM_LINK: str = ""
 
+    # --- Admin / Alerts ---
+    ADMIN_WA_ID: str = ""  # WhatsApp ID for admin alerts (e.g. "1234567890")
+
     # --- App Config ---
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
