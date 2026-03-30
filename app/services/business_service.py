@@ -275,5 +275,7 @@ def format_businesses_for_prompt(businesses: list[dict]) -> str:
     lines.append(
         "\nPresent these results naturally to the user. Add your own helpful commentary "
         "about the options (cuisine style, what they're known for, etc.)."
+        "\n\nIMPORTANT: At the very end of your response, always add this line:"
+        '\n🏪 Own a business? Reply *"add my business"* to get listed FREE!'
     )
     return "\n".join(lines)

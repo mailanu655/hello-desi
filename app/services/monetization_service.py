@@ -16,16 +16,17 @@ WhatsApp commands:
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from supabase import create_client
 from config.settings import Settings
+from app.services.session_store import get_session, set_session, delete_session, session_exists
 
 logger = logging.getLogger(__name__)
 
-SESSION_TIMEOUT = 600  # 10 minutes
+# Redis key prefix for upgrade sessions
+_KEY_PREFIX = "upgrade:"
 
 # ── Pricing ─────────────────────────────────────────────────────
 PLANS = {
@@ -61,28 +62,27 @@ class UpgradeStep(str, Enum):
     CONFIRM = "confirm"
 
 
-@dataclass
-class UpgradeSession:
-    wa_id: str
-    step: str
-    data: dict = field(default_factory=dict)
-    matches: list = field(default_factory=list)
-    updated_at: float = field(default_factory=time.time)
+def _key(wa_id: str) -> str:
+    return f"{_KEY_PREFIX}{wa_id}"
 
 
-_upgrade_sessions: dict[str, UpgradeSession] = {}
+def _get(wa_id: str, settings: Settings) -> dict | None:
+    return get_session(_key(wa_id), settings)
 
 
-def _clean_expired():
-    now = time.time()
-    expired = [k for k, v in _upgrade_sessions.items() if now - v.updated_at > SESSION_TIMEOUT]
-    for k in expired:
-        del _upgrade_sessions[k]
+def _save(wa_id: str, session: dict, settings: Settings) -> None:
+    set_session(_key(wa_id), session, settings)
 
 
-def has_active_upgrade_session(wa_id: str) -> bool:
-    _clean_expired()
-    return wa_id in _upgrade_sessions
+def _del(wa_id: str, settings: Settings) -> None:
+    delete_session(_key(wa_id), settings)
+
+
+def has_active_upgrade_session(wa_id: str, settings: Settings | None = None) -> bool:
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    return session_exists(_key(wa_id), settings)
 
 
 # ── Intent detection ────────────────────────────────────────────
@@ -130,11 +130,16 @@ def detect_monetization_intent(message: str) -> str | None:
 
 
 # ── Start upgrade flow ──────────────────────────────────────────
-def start_upgrade_flow(wa_id: str) -> str:
-    _upgrade_sessions[wa_id] = UpgradeSession(
-        wa_id=wa_id,
-        step=UpgradeStep.BUSINESS_LOOKUP,
-    )
+def start_upgrade_flow(wa_id: str, settings: Settings | None = None) -> str:
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _save(wa_id, {
+        "wa_id": wa_id,
+        "step": UpgradeStep.BUSINESS_LOOKUP,
+        "data": {},
+        "matches": [],
+    }, settings)
     return (
         "Got you 👍 Let's get you upgraded!\n\n"
         "What's your *business name* or *phone number*?"
@@ -161,28 +166,27 @@ def _plan_menu(current_plan: str = "free") -> str:
 
 # ── Upgrade session handler ─────────────────────────────────────
 def handle_upgrade_message(wa_id: str, message: str, settings: Settings) -> str:
-    _clean_expired()
-    session = _upgrade_sessions.get(wa_id)
+    session = _get(wa_id, settings)
     if not session:
         return "No active session. Say *'feature my business'* to upgrade."
 
     msg = message.strip()
     if msg.lower() in ("cancel", "stop", "quit", "exit", "nevermind"):
-        del _upgrade_sessions[wa_id]
+        _del(wa_id, settings)
         return "No worries, cancelled 👍"
 
-    session.updated_at = time.time()
     return _handle_upgrade_step(session, msg, settings)
 
 
-def _handle_upgrade_step(session: UpgradeSession, msg: str, settings: Settings) -> str:
-    step = session.step
+def _handle_upgrade_step(session: dict, msg: str, settings: Settings) -> str:
+    step = session["step"]
+    wa_id = session["wa_id"]
 
     if step == UpgradeStep.BUSINESS_LOOKUP:
         return _upgrade_lookup(session, msg, settings)
 
     elif step == UpgradeStep.SELECT_BUSINESS:
-        return _upgrade_select(session, msg)
+        return _upgrade_select(session, msg, settings)
 
     elif step == UpgradeStep.CHOOSE_PLAN:
         return _upgrade_choose_plan(session, msg, settings)
@@ -191,14 +195,16 @@ def _handle_upgrade_step(session: UpgradeSession, msg: str, settings: Settings) 
         if msg.lower() in ("yes", "y", "confirm", "ok", "👍"):
             return _activate_plan(session, settings)
         elif msg.lower() in ("no", "n", "cancel"):
-            del _upgrade_sessions[session.wa_id]
+            _del(wa_id, settings)
             return "No worries! Your current plan stays active. 🙏"
         return "Reply *yes* to confirm or *no* to cancel."
 
     return "Something went wrong. Type 'cancel' to exit."
 
 
-def _upgrade_lookup(session: UpgradeSession, msg: str, settings: Settings) -> str:
+def _upgrade_lookup(session: dict, msg: str, settings: Settings) -> str:
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         digits = "".join(c for c in msg if c.isdigit())
@@ -215,10 +221,12 @@ def _upgrade_lookup(session: UpgradeSession, msg: str, settings: Settings) -> st
             )
 
         if len(result.data) == 1:
-            session.data["business"] = result.data[0]
+            data["business"] = result.data[0]
             current = _get_current_plan(result.data[0]["id"], settings)
-            session.data["current_plan"] = current
-            session.step = UpgradeStep.CHOOSE_PLAN
+            data["current_plan"] = current
+            session["data"] = data
+            session["step"] = UpgradeStep.CHOOSE_PLAN
+            _save(wa_id, session, settings)
             b = result.data[0]
             featured_badge = " ⭐ Featured" if b.get("is_featured") else ""
             return (
@@ -228,10 +236,11 @@ def _upgrade_lookup(session: UpgradeSession, msg: str, settings: Settings) -> st
                 f"{_plan_menu(current)}"
             )
 
-        session.matches = result.data[:5]
-        session.step = UpgradeStep.SELECT_BUSINESS
+        session["matches"] = result.data[:5]
+        session["step"] = UpgradeStep.SELECT_BUSINESS
+        _save(wa_id, session, settings)
         lines = ["Multiple matches. Which one? (reply with number)\n"]
-        for i, b in enumerate(session.matches, 1):
+        for i, b in enumerate(result.data[:5], 1):
             lines.append(f"{i}. *{b['name']}* — {b.get('city', '')}, {b.get('state', '')}")
         return "\n".join(lines)
 
@@ -240,15 +249,20 @@ def _upgrade_lookup(session: UpgradeSession, msg: str, settings: Settings) -> st
         return "Sorry, something went wrong. Please try again. 🙏"
 
 
-def _upgrade_select(session: UpgradeSession, msg: str) -> str:
+def _upgrade_select(session: dict, msg: str, settings: Settings) -> str:
+    wa_id = session["wa_id"]
+    matches = session.get("matches", [])
+    data = session.get("data", {})
     try:
         idx = int(msg.strip()) - 1
-        if 0 <= idx < len(session.matches):
-            b = session.matches[idx]
-            session.data["business"] = b
-            current = "free"  # default
-            session.data["current_plan"] = current
-            session.step = UpgradeStep.CHOOSE_PLAN
+        if 0 <= idx < len(matches):
+            b = matches[idx]
+            data["business"] = b
+            current = "free"
+            data["current_plan"] = current
+            session["data"] = data
+            session["step"] = UpgradeStep.CHOOSE_PLAN
+            _save(wa_id, session, settings)
             return (
                 f"Selected: *{b['name']}*\n"
                 f"Current plan: *{PLANS[current]['label']}*\n\n"
@@ -259,24 +273,30 @@ def _upgrade_select(session: UpgradeSession, msg: str) -> str:
     return "Please reply with a number from the list, or *cancel* to exit."
 
 
-def _upgrade_choose_plan(session: UpgradeSession, msg: str, settings: Settings) -> str:
+def _upgrade_choose_plan(session: dict, msg: str, settings: Settings) -> str:
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
     plan_keys = list(PLANS.keys())
     try:
         idx = int(msg.strip()) - 1
         if 0 <= idx < len(plan_keys):
             chosen = plan_keys[idx]
-            if chosen == session.data.get("current_plan"):
+            if chosen == data.get("current_plan"):
                 return "That's already your current plan! Pick a different one, or *cancel*."
             if chosen == "free":
-                session.data["chosen_plan"] = "free"
-                session.step = UpgradeStep.CONFIRM
+                data["chosen_plan"] = "free"
+                session["data"] = data
+                session["step"] = UpgradeStep.CONFIRM
+                _save(wa_id, session, settings)
                 return (
                     "Switch to *Free* plan?\n"
                     "You'll lose your Featured badge + limited to 1 deal/month.\n\n"
                     "Reply *yes* to confirm or *no* to cancel."
                 )
-            session.data["chosen_plan"] = chosen
-            session.step = UpgradeStep.CONFIRM
+            data["chosen_plan"] = chosen
+            session["data"] = data
+            session["step"] = UpgradeStep.CONFIRM
+            _save(wa_id, session, settings)
             p = PLANS[chosen]
             return (
                 f"*{p['label']}* — {p['price']}\n\n"
@@ -287,41 +307,40 @@ def _upgrade_choose_plan(session: UpgradeSession, msg: str, settings: Settings) 
             )
     except (ValueError, IndexError):
         pass
-    return f"Please pick a number.\n\n{_plan_menu(session.data.get('current_plan', 'free'))}"
+    return f"Please pick a number.\n\n{_plan_menu(data.get('current_plan', 'free'))}"
 
 
-def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
+def _activate_plan(session: dict, settings: Settings) -> str:
     """Activate the chosen plan in Supabase."""
-    b = session.data["business"]
-    chosen = session.data["chosen_plan"]
+    data = session["data"]
+    wa_id = session["wa_id"]
+    b = data["business"]
+    chosen = data["chosen_plan"]
     p = PLANS[chosen]
 
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-        # Update business featured status
         client.table("businesses").update({
             "is_featured": p["featured"]
         }).eq("id", b["id"]).execute()
 
-        # Upsert subscription record
         now = datetime.now(timezone.utc)
         sub_row = {
             "id": str(uuid.uuid4()),
             "business_id": b["id"],
-            "wa_id": session.wa_id,
+            "wa_id": wa_id,
             "plan": chosen,
             "status": "active",
             "deals_per_month": p["deals_per_month"],
             "starts_at": now.isoformat(),
             "expires_at": (now + timedelta(days=30)).isoformat() if chosen != "free" else None,
         }
-        # Delete old subscription for this business first
         client.table("subscriptions").delete().eq("business_id", b["id"]).execute()
         client.table("subscriptions").insert(sub_row).execute()
 
-        del _upgrade_sessions[session.wa_id]
-        logger.info(f"Plan activated: {b['name']} → {chosen} by {session.wa_id}")
+        _del(wa_id, settings)
+        logger.info(f"Plan activated: {b['name']} → {chosen} by {wa_id}")
 
         if chosen == "free":
             return (
@@ -329,7 +348,6 @@ def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
                 "Want to upgrade again anytime? Just say *'feature my business'*."
             )
 
-        # For paid plans, send payment instructions with Stripe link
         stripe_links = {
             "featured": settings.STRIPE_FEATURED_LINK,
             "premium": settings.STRIPE_PREMIUM_LINK,
@@ -358,7 +376,7 @@ def _activate_plan(session: UpgradeSession, settings: Settings) -> str:
 
     except Exception as e:
         logger.error(f"Failed to activate plan: {e}")
-        del _upgrade_sessions[session.wa_id]
+        _del(wa_id, settings)
         return "Sorry, something went wrong. Please try again later. 🙏"
 
 

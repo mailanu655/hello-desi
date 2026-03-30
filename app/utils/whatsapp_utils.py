@@ -34,16 +34,35 @@ def extract_message_data(body: dict) -> dict:
     Extract wa_id, name, and message body from a validated WhatsApp webhook payload.
 
     FIX from reference: Returns the SENDER's wa_id, not a hardcoded RECIPIENT_WAID.
+    Handles non-text messages gracefully (images, audio, locations, etc.).
     """
     value = body["entry"][0]["changes"][0]["value"]
     contact = value["contacts"][0]
     message = value["messages"][0]
 
+    message_type = message.get("type", "text")
+
+    # Extract text body safely — non-text messages won't have message["text"]
+    if message_type == "text":
+        message_body = message.get("text", {}).get("body", "")
+    elif message_type == "interactive":
+        # Button replies / list replies
+        interactive = message.get("interactive", {})
+        if interactive.get("type") == "button_reply":
+            message_body = interactive.get("button_reply", {}).get("title", "")
+        elif interactive.get("type") == "list_reply":
+            message_body = interactive.get("list_reply", {}).get("title", "")
+        else:
+            message_body = ""
+    else:
+        # image, audio, video, document, location, sticker, contacts, etc.
+        message_body = ""
+
     return {
         "wa_id": contact["wa_id"],
         "name": contact["profile"]["name"],
-        "message_body": message["text"]["body"],
-        "message_type": message.get("type", "text"),
+        "message_body": message_body,
+        "message_type": message_type,
         "message_id": message.get("id", ""),
     }
 

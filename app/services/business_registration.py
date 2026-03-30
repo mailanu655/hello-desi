@@ -5,23 +5,23 @@ Handles multi-step WhatsApp conversations for:
   1. Adding a new business listing
   2. Updating an existing business listing
 
-Uses in-memory session state keyed by WhatsApp ID (wa_id).
-Each session expires after 10 minutes of inactivity.
+Uses Redis-backed session store (survives container restarts).
+Falls back to in-memory if Redis is unavailable.
 """
 
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from enum import Enum
 
 from supabase import create_client
 from config.settings import Settings
+from app.services.session_store import get_session, set_session, delete_session, session_exists
 
 logger = logging.getLogger(__name__)
 
-# ── Session timeout ──────────────────────────────────────────────
-SESSION_TIMEOUT = 600  # 10 minutes
+# Redis key prefix for registration sessions
+_KEY_PREFIX = "reg:"
 
 # ── Valid categories (must match DB values) ──────────────────────
 VALID_CATEGORIES = [
@@ -65,38 +65,39 @@ class UpdateStep(str, Enum):
     CONFIRM = "confirm"
 
 
-@dataclass
-class RegistrationSession:
-    wa_id: str
-    flow: str  # "add" or "update"
-    step: str
-    data: dict = field(default_factory=dict)
-    matches: list = field(default_factory=list)  # for update flow
-    updated_at: float = field(default_factory=time.time)
+def _key(wa_id: str) -> str:
+    return f"{_KEY_PREFIX}{wa_id}"
 
 
-# ── In-memory session store ──────────────────────────────────────
-_sessions: dict[str, RegistrationSession] = {}
+def _get(wa_id: str, settings: Settings) -> dict | None:
+    """Get the current registration session for a user."""
+    return get_session(_key(wa_id), settings)
 
 
-def _clean_expired():
-    """Remove sessions older than SESSION_TIMEOUT."""
-    now = time.time()
-    expired = [k for k, v in _sessions.items() if now - v.updated_at > SESSION_TIMEOUT]
-    for k in expired:
-        del _sessions[k]
+def _save(wa_id: str, session: dict, settings: Settings) -> None:
+    """Save/update a registration session."""
+    set_session(_key(wa_id), session, settings)
 
 
-def has_active_session(wa_id: str) -> bool:
+def _delete(wa_id: str, settings: Settings) -> None:
+    """Delete a registration session."""
+    delete_session(_key(wa_id), settings)
+
+
+def has_active_session(wa_id: str, settings: Settings | None = None) -> bool:
     """Check if user has an active registration/update session."""
-    _clean_expired()
-    return wa_id in _sessions
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    return session_exists(_key(wa_id), settings)
 
 
-def cancel_session(wa_id: str) -> str:
+def cancel_session(wa_id: str, settings: Settings | None = None) -> str:
     """Cancel an active session."""
-    if wa_id in _sessions:
-        del _sessions[wa_id]
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _delete(wa_id, settings)
     return "Registration cancelled. How else can I help you? 🙏"
 
 
@@ -131,13 +132,18 @@ def detect_registration_intent(message: str) -> str | None:
 
 
 # ── Start flows ──────────────────────────────────────────────────
-def start_add_flow(wa_id: str) -> str:
+def start_add_flow(wa_id: str, settings: Settings | None = None) -> str:
     """Begin the 'add my business' conversation."""
-    _sessions[wa_id] = RegistrationSession(
-        wa_id=wa_id,
-        flow="add",
-        step=AddStep.NAME,
-    )
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _save(wa_id, {
+        "wa_id": wa_id,
+        "flow": "add",
+        "step": AddStep.NAME,
+        "data": {},
+        "matches": [],
+    }, settings)
     return (
         "Got you 👍 Let's get you listed!\n\n"
         "I'll ask a few quick questions.\n\n"
@@ -145,13 +151,18 @@ def start_add_flow(wa_id: str) -> str:
     )
 
 
-def start_update_flow(wa_id: str) -> str:
+def start_update_flow(wa_id: str, settings: Settings | None = None) -> str:
     """Begin the 'update my business' conversation."""
-    _sessions[wa_id] = RegistrationSession(
-        wa_id=wa_id,
-        flow="update",
-        step=UpdateStep.LOOKUP,
-    )
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _save(wa_id, {
+        "wa_id": wa_id,
+        "flow": "update",
+        "step": UpdateStep.LOOKUP,
+        "data": {},
+        "matches": [],
+    }, settings)
     return (
         "Sure, let's update your business listing! ✏️\n\n"
         "Please tell me your *business name* or *phone number* "
@@ -222,8 +233,7 @@ def handle_registration_message(wa_id: str, message: str, settings: Settings) ->
     Process a message within an active registration/update session.
     Returns the bot's reply text.
     """
-    _clean_expired()
-    session = _sessions.get(wa_id)
+    session = _get(wa_id, settings)
     if not session:
         return "No active session found. Say *'add my business'* or *'update my business'* to start."
 
@@ -231,70 +241,82 @@ def handle_registration_message(wa_id: str, message: str, settings: Settings) ->
 
     # Allow cancel at any point
     if msg.lower() in ("cancel", "stop", "quit", "exit", "nevermind"):
-        return cancel_session(wa_id)
+        return cancel_session(wa_id, settings)
 
-    session.updated_at = time.time()
-
-    if session.flow == "add":
+    if session["flow"] == "add":
         return _handle_add_step(session, msg, settings)
-    elif session.flow == "update":
+    elif session["flow"] == "update":
         return _handle_update_step(session, msg, settings)
     else:
-        del _sessions[wa_id]
+        _delete(wa_id, settings)
         return "Something went wrong. Please try again."
 
 
 # ── ADD flow steps ───────────────────────────────────────────────
-def _handle_add_step(session: RegistrationSession, msg: str, settings: Settings) -> str:
-    step = session.step
+def _handle_add_step(session: dict, msg: str, settings: Settings) -> str:
+    step = session["step"]
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
 
     if step == AddStep.NAME:
-        session.data["name"] = msg
-        session.step = AddStep.CATEGORY
+        data["name"] = msg
+        session["data"] = data
+        session["step"] = AddStep.CATEGORY
+        _save(wa_id, session, settings)
         return f"Got it — *{msg}*\n\n{_category_menu()}"
 
     elif step == AddStep.CATEGORY:
         cat = _parse_category(msg)
         if not cat:
             return f"I didn't catch that. {_category_menu()}"
-        session.data["category"] = cat
-        session.step = AddStep.ADDRESS
+        data["category"] = cat
+        session["data"] = data
+        session["step"] = AddStep.ADDRESS
+        _save(wa_id, session, settings)
         return f"Category: *{CATEGORY_DISPLAY[cat]}*\n\nWhat is the *street address*?"
 
     elif step == AddStep.ADDRESS:
-        session.data["address"] = msg
-        session.step = AddStep.CITY
+        data["address"] = msg
+        session["data"] = data
+        session["step"] = AddStep.CITY
+        _save(wa_id, session, settings)
         return "What *city* is the business in?"
 
     elif step == AddStep.CITY:
-        session.data["city"] = msg.title()
-        session.step = AddStep.STATE
+        data["city"] = msg.title()
+        session["data"] = data
+        session["step"] = AddStep.STATE
+        _save(wa_id, session, settings)
         return f"City: *{msg.title()}*\n\nWhat *state*? (e.g. TX, CA, NJ)"
 
     elif step == AddStep.STATE:
         state = msg.strip().upper()
         if len(state) > 2:
-            # Try to find abbreviation
             from app.services.business_service import STATE_ABBREVS
             state = STATE_ABBREVS.get(msg.lower(), state[:2].upper())
-        session.data["state"] = state
-        session.step = AddStep.PHONE
+        data["state"] = state
+        session["data"] = data
+        session["step"] = AddStep.PHONE
+        _save(wa_id, session, settings)
         return f"State: *{state}*\n\nWhat is the *phone number*? (or type 'skip' if none)"
 
     elif step == AddStep.PHONE:
         if msg.lower() == "skip":
-            session.data["phone"] = None
+            data["phone"] = None
         else:
-            session.data["phone"] = msg
-        session.step = AddStep.CONFIRM
-        return _add_confirmation(session)
+            data["phone"] = msg
+        session["data"] = data
+        session["step"] = AddStep.CONFIRM
+        _save(wa_id, session, settings)
+        return _add_confirmation(data)
 
     elif step == AddStep.CONFIRM:
         if msg.lower() in ("yes", "y", "confirm", "looks good", "correct", "ok", "👍"):
             return _insert_business(session, settings)
         elif msg.lower() in ("no", "n", "restart", "start over"):
-            session.step = AddStep.NAME
-            session.data = {}
+            session["step"] = AddStep.NAME
+            session["data"] = {}
+            _save(wa_id, session, settings)
             return "No problem! Let's start over.\n\nWhat is your *business name*?"
         else:
             return "Please reply *yes* to confirm or *no* to start over."
@@ -302,8 +324,7 @@ def _handle_add_step(session: RegistrationSession, msg: str, settings: Settings)
     return "Something went wrong. Type 'cancel' to exit."
 
 
-def _add_confirmation(session: RegistrationSession) -> str:
-    d = session.data
+def _add_confirmation(d: dict) -> str:
     phone_line = f"📞 {d['phone']}" if d.get("phone") else "📞 (none)"
     return (
         "Here's what I have:\n\n"
@@ -315,9 +336,10 @@ def _add_confirmation(session: RegistrationSession) -> str:
     )
 
 
-def _insert_business(session: RegistrationSession, settings: Settings) -> str:
+def _insert_business(session: dict, settings: Settings) -> str:
     """Insert the new business into Supabase."""
-    d = session.data
+    d = session["data"]
+    wa_id = session["wa_id"]
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         row = {
@@ -330,74 +352,82 @@ def _insert_business(session: RegistrationSession, settings: Settings) -> str:
             "state": d["state"],
             "phone": d.get("phone"),
             "source": "user_submitted",
-            "source_id": f"user_{session.wa_id}_{int(time.time())}",
+            "source_id": f"user_{wa_id}_{int(time.time())}",
             "is_featured": False,
         }
         client.table("businesses").insert(row).execute()
-        del _sessions[session.wa_id]
-        logger.info(f"Business added by {session.wa_id}: {d['name']} in {d['city']}, {d['state']}")
+        _delete(wa_id, settings)
+        logger.info(f"Business added by {wa_id}: {d['name']} in {d['city']}, {d['state']}")
         return (
             f"*{d['name']}* is now listed! 🎉\n\n"
             "People can find you when they search 👍\n\n"
+            "🚀 *Next step:* Post your first deal to attract customers!\n"
+            "👉 Reply *\"post a deal\"*\n\n"
             "Want to make changes later? Just say *\"update my business\"*\n"
             "Want daily updates? Try *\"daily digest in [your city]\"*"
         )
     except Exception as e:
-        logger.error(f"Failed to insert business for {session.wa_id}: {e}")
-        del _sessions[session.wa_id]
+        logger.error(f"Failed to insert business for {wa_id}: {e}")
+        _delete(wa_id, settings)
         return "Sorry, something went wrong while saving your business. Please try again later. 🙏"
 
 
 # ── UPDATE flow steps ────────────────────────────────────────────
-def _handle_update_step(session: RegistrationSession, msg: str, settings: Settings) -> str:
-    step = session.step
+def _handle_update_step(session: dict, msg: str, settings: Settings) -> str:
+    step = session["step"]
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
 
     if step == UpdateStep.LOOKUP:
         return _lookup_business(session, msg, settings)
 
     elif step == UpdateStep.SELECT:
-        return _select_match(session, msg)
+        return _select_match(session, msg, settings)
 
     elif step == UpdateStep.CHOOSE_FIELD:
-        field = _parse_field(msg)
-        if not field:
+        fld = _parse_field(msg)
+        if not fld:
             return f"I didn't catch that.\n\n{_field_menu()}"
-        session.data["update_field"] = field
-        session.step = UpdateStep.NEW_VALUE
-        if field == "category":
+        data["update_field"] = fld
+        session["data"] = data
+        session["step"] = UpdateStep.NEW_VALUE
+        _save(wa_id, session, settings)
+        if fld == "category":
             return f"You want to update the *category*.\n\n{_category_menu()}"
         labels = {
             "name": "business name", "address": "street address",
             "city": "city", "state": "state (e.g. TX)",
             "phone": "phone number",
         }
-        return f"Enter the new *{labels.get(field, field)}*:"
+        return f"Enter the new *{labels.get(fld, fld)}*:"
 
     elif step == UpdateStep.NEW_VALUE:
-        field = session.data["update_field"]
-        if field == "category":
+        fld = data["update_field"]
+        if fld == "category":
             cat = _parse_category(msg)
             if not cat:
                 return f"Invalid category.\n\n{_category_menu()}"
-            session.data["new_value"] = cat
-        elif field == "state":
+            data["new_value"] = cat
+        elif fld == "state":
             state = msg.strip().upper()
             if len(state) > 2:
                 from app.services.business_service import STATE_ABBREVS
                 state = STATE_ABBREVS.get(msg.lower(), state[:2].upper())
-            session.data["new_value"] = state
-        elif field == "city":
-            session.data["new_value"] = msg.strip().title()
+            data["new_value"] = state
+        elif fld == "city":
+            data["new_value"] = msg.strip().title()
         else:
-            session.data["new_value"] = msg.strip()
-        session.step = UpdateStep.CONFIRM
-        return _update_confirmation(session)
+            data["new_value"] = msg.strip()
+        session["data"] = data
+        session["step"] = UpdateStep.CONFIRM
+        _save(wa_id, session, settings)
+        return _update_confirmation(data)
 
     elif step == UpdateStep.CONFIRM:
         if msg.lower() in ("yes", "y", "confirm", "looks good", "correct", "ok", "👍"):
             return _update_business(session, settings)
         elif msg.lower() in ("no", "n", "cancel"):
-            del _sessions[session.wa_id]
+            _delete(wa_id, settings)
             return "Update cancelled. Let me know if you need anything else! 🙏"
         else:
             return "Please reply *yes* to confirm or *no* to cancel."
@@ -405,11 +435,12 @@ def _handle_update_step(session: RegistrationSession, msg: str, settings: Settin
     return "Something went wrong. Type 'cancel' to exit."
 
 
-def _lookup_business(session: RegistrationSession, msg: str, settings: Settings) -> str:
+def _lookup_business(session: dict, msg: str, settings: Settings) -> str:
     """Look up a business by name or phone."""
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        # Try phone match first
         digits = "".join(c for c in msg if c.isdigit())
         if len(digits) >= 7:
             result = client.table("businesses").select("*").ilike("phone", f"%{digits[-10:]}%").execute()
@@ -423,8 +454,10 @@ def _lookup_business(session: RegistrationSession, msg: str, settings: Settings)
             )
 
         if len(result.data) == 1:
-            session.data["business"] = result.data[0]
-            session.step = UpdateStep.CHOOSE_FIELD
+            data["business"] = result.data[0]
+            session["data"] = data
+            session["step"] = UpdateStep.CHOOSE_FIELD
+            _save(wa_id, session, settings)
             b = result.data[0]
             return (
                 f"Found: *{b['name']}*\n"
@@ -433,27 +466,33 @@ def _lookup_business(session: RegistrationSession, msg: str, settings: Settings)
                 f"{_field_menu()}"
             )
 
-        # Multiple matches — let user pick
-        session.matches = result.data[:5]
-        session.step = UpdateStep.SELECT
+        # Multiple matches
+        session["matches"] = result.data[:5]
+        session["step"] = UpdateStep.SELECT
+        _save(wa_id, session, settings)
         lines = ["I found multiple matches. Which one is yours? (reply with the number)\n"]
-        for i, b in enumerate(session.matches, 1):
+        for i, b in enumerate(result.data[:5], 1):
             lines.append(f"{i}. *{b['name']}* — {b.get('city', '')}, {b.get('state', '')}")
         return "\n".join(lines)
 
     except Exception as e:
-        logger.error(f"Business lookup failed for {session.wa_id}: {e}")
+        logger.error(f"Business lookup failed for {wa_id}: {e}")
         return "Sorry, something went wrong during lookup. Please try again. 🙏"
 
 
-def _select_match(session: RegistrationSession, msg: str) -> str:
+def _select_match(session: dict, msg: str, settings: Settings) -> str:
     """User picks from multiple matches."""
+    wa_id = session["wa_id"]
+    matches = session.get("matches", [])
+    data = session.get("data", {})
     try:
         idx = int(msg.strip()) - 1
-        if 0 <= idx < len(session.matches):
-            session.data["business"] = session.matches[idx]
-            session.step = UpdateStep.CHOOSE_FIELD
-            b = session.matches[idx]
+        if 0 <= idx < len(matches):
+            data["business"] = matches[idx]
+            session["data"] = data
+            session["step"] = UpdateStep.CHOOSE_FIELD
+            _save(wa_id, session, settings)
+            b = matches[idx]
             return (
                 f"Selected: *{b['name']}*\n\n"
                 f"{_field_menu()}"
@@ -463,46 +502,47 @@ def _select_match(session: RegistrationSession, msg: str) -> str:
     return "Please reply with a number from the list, or type *cancel* to exit."
 
 
-def _update_confirmation(session: RegistrationSession) -> str:
-    b = session.data["business"]
-    field = session.data["update_field"]
-    new_val = session.data["new_value"]
+def _update_confirmation(data: dict) -> str:
+    b = data["business"]
+    fld = data["update_field"]
+    new_val = data["new_value"]
     labels = {
         "name": "Business Name", "category": "Category",
         "address": "Address", "city": "City",
         "state": "State", "phone": "Phone",
     }
-    display_val = CATEGORY_DISPLAY.get(new_val, new_val) if field == "category" else new_val
+    display_val = CATEGORY_DISPLAY.get(new_val, new_val) if fld == "category" else new_val
     return (
         f"Update *{b['name']}*:\n\n"
-        f"*{labels.get(field, field)}*: {b.get(field, 'N/A')} → *{display_val}*\n\n"
+        f"*{labels.get(fld, fld)}*: {b.get(fld, 'N/A')} → *{display_val}*\n\n"
         "Confirm? Reply *yes* or *no*."
     )
 
 
-def _update_business(session: RegistrationSession, settings: Settings) -> str:
+def _update_business(session: dict, settings: Settings) -> str:
     """Apply the update to Supabase."""
-    b = session.data["business"]
-    field = session.data["update_field"]
-    new_val = session.data["new_value"]
+    data = session["data"]
+    wa_id = session["wa_id"]
+    b = data["business"]
+    fld = data["update_field"]
+    new_val = data["new_value"]
 
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-        update_data = {field: new_val}
-        # If updating address, city, or state, also update the combined address field
-        if field in ("city", "state"):
-            update_data[field] = new_val
+        update_data = {fld: new_val}
+        if fld in ("city", "state"):
+            update_data[fld] = new_val
 
         client.table("businesses").update(update_data).eq("id", b["id"]).execute()
-        del _sessions[session.wa_id]
-        logger.info(f"Business updated by {session.wa_id}: {b['name']} — {field} → {new_val}")
+        _delete(wa_id, settings)
+        logger.info(f"Business updated by {wa_id}: {b['name']} — {fld} → {new_val}")
         return (
             f"Done! *{b['name']}* has been updated. ✅\n\n"
             "The change is live — users will see it right away.\n"
             "Need anything else? 🙏"
         )
     except Exception as e:
-        logger.error(f"Failed to update business for {session.wa_id}: {e}")
-        del _sessions[session.wa_id]
+        logger.error(f"Failed to update business for {wa_id}: {e}")
+        _delete(wa_id, settings)
         return "Sorry, something went wrong while updating. Please try again later. 🙏"

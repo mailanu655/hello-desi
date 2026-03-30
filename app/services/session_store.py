@@ -1,0 +1,170 @@
+"""
+Mira — Redis-backed Session Store
+
+Replaces in-memory dicts for multi-step WhatsApp conversation flows.
+Sessions survive Railway container restarts and deploys.
+
+Uses Upstash Redis with automatic TTL expiry.
+Falls back to in-memory dict if Redis is unavailable (dev mode).
+"""
+
+import json
+import logging
+from typing import Any
+
+import redis
+
+from config.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+# Session TTL: 15 minutes (refreshed on every interaction)
+SESSION_TTL = 900
+
+# Module-level Redis client (lazy-initialized)
+_redis_client: redis.Redis | None = None
+_redis_available: bool | None = None
+
+# In-memory fallback (for dev/testing when Redis is down)
+_fallback_store: dict[str, dict] = {}
+
+
+def _get_redis(settings: Settings) -> redis.Redis | None:
+    """Get or create a Redis connection. Returns None if unavailable."""
+    global _redis_client, _redis_available
+
+    # If we already know Redis is unavailable, skip
+    if _redis_available is False:
+        return None
+
+    if _redis_client is not None:
+        return _redis_client
+
+    redis_url = getattr(settings, "REDIS_URL", "")
+    if not redis_url:
+        logger.info("REDIS_URL not configured — using in-memory fallback")
+        _redis_available = False
+        return None
+
+    try:
+        _redis_client = redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+        )
+        # Test connectivity
+        _redis_client.ping()
+        _redis_available = True
+        logger.info("Redis session store connected")
+        return _redis_client
+    except Exception as e:
+        logger.warning(f"Redis unavailable, falling back to in-memory: {e}")
+        _redis_available = False
+        _redis_client = None
+        return None
+
+
+def get_session(key: str, settings: Settings) -> dict | None:
+    """
+    Retrieve a session by key.
+
+    Returns the session data dict, or None if not found / expired.
+    Automatically refreshes TTL on access.
+    """
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            data = r.get(key)
+            if data:
+                r.expire(key, SESSION_TTL)  # Refresh TTL on every access
+                return json.loads(data)
+            return None
+        except Exception as e:
+            logger.warning(f"Redis get failed for {key}: {e}")
+            # Fall through to in-memory
+            return _fallback_store.get(key)
+    else:
+        return _fallback_store.get(key)
+
+
+def set_session(key: str, data: dict, settings: Settings) -> None:
+    """
+    Store a session with automatic TTL.
+
+    The session will expire after SESSION_TTL seconds of inactivity.
+    Every call to get_session or set_session refreshes the TTL.
+    """
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            r.setex(key, SESSION_TTL, json.dumps(data, default=str))
+            return
+        except Exception as e:
+            logger.warning(f"Redis set failed for {key}: {e}")
+            # Fall through to in-memory
+
+    _fallback_store[key] = data
+
+
+def delete_session(key: str, settings: Settings) -> None:
+    """Delete a session (on completion or cancellation)."""
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            r.delete(key)
+        except Exception as e:
+            logger.warning(f"Redis delete failed for {key}: {e}")
+
+    # Always clean up fallback too
+    _fallback_store.pop(key, None)
+
+
+def message_seen(message_id: str, settings: Settings) -> bool:
+    """
+    Check if a WhatsApp message ID has already been processed.
+
+    Returns True if duplicate (already seen), False if new.
+    Automatically marks the message as seen with a 5-min TTL.
+    Prevents duplicate processing when WhatsApp retries webhook delivery.
+    """
+    if not message_id:
+        return False  # No ID = can't deduplicate, process it
+
+    key = f"msg:{message_id}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            # SET NX = only set if not exists; returns True if set, False if already exists
+            was_new = r.set(key, "1", ex=300, nx=True)
+            return not was_new  # True if already existed (duplicate)
+        except Exception as e:
+            logger.warning(f"Redis dedup check failed for {message_id}: {e}")
+            # Fall through to in-memory
+            if key in _fallback_store:
+                return True
+            _fallback_store[key] = {"_dedup": True}
+            return False
+    else:
+        if key in _fallback_store:
+            return True
+        _fallback_store[key] = {"_dedup": True}
+        return False
+
+
+def session_exists(key: str, settings: Settings) -> bool:
+    """Check if a session exists (without refreshing TTL)."""
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            return bool(r.exists(key))
+        except Exception as e:
+            logger.warning(f"Redis exists check failed for {key}: {e}")
+            return key in _fallback_store
+    else:
+        return key in _fallback_store

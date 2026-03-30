@@ -6,22 +6,23 @@ Handles:
   2. Users searching/browsing deals by city, category, or keyword
   3. Auto-expiry of old deals
 
-Uses in-memory session state for the multi-step deal posting flow.
+Uses Redis-backed session store (survives container restarts).
 """
 
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from supabase import create_client
 from config.settings import Settings
+from app.services.session_store import get_session, set_session, delete_session, session_exists
 
 logger = logging.getLogger(__name__)
 
-SESSION_TIMEOUT = 600  # 10 minutes
+# Redis key prefix for deal sessions
+_KEY_PREFIX = "deal:"
 
 # ── Deal types ──────────────────────────────────────────────────
 DEAL_TYPES = ["discount", "bogo", "freebie", "special", "coupon", "event"]
@@ -55,34 +56,34 @@ class DealStep(str, Enum):
     CONFIRM = "confirm"
 
 
-@dataclass
-class DealSession:
-    wa_id: str
-    step: str
-    data: dict = field(default_factory=dict)
-    matches: list = field(default_factory=list)
-    updated_at: float = field(default_factory=time.time)
+def _key(wa_id: str) -> str:
+    return f"{_KEY_PREFIX}{wa_id}"
 
 
-# ── In-memory session store ─────────────────────────────────────
-_deal_sessions: dict[str, DealSession] = {}
+def _get(wa_id: str, settings: Settings) -> dict | None:
+    return get_session(_key(wa_id), settings)
 
 
-def _clean_expired():
-    now = time.time()
-    expired = [k for k, v in _deal_sessions.items() if now - v.updated_at > SESSION_TIMEOUT]
-    for k in expired:
-        del _deal_sessions[k]
+def _save(wa_id: str, session: dict, settings: Settings) -> None:
+    set_session(_key(wa_id), session, settings)
 
 
-def has_active_deal_session(wa_id: str) -> bool:
-    _clean_expired()
-    return wa_id in _deal_sessions
+def _del(wa_id: str, settings: Settings) -> None:
+    delete_session(_key(wa_id), settings)
 
 
-def cancel_deal_session(wa_id: str) -> str:
-    if wa_id in _deal_sessions:
-        del _deal_sessions[wa_id]
+def has_active_deal_session(wa_id: str, settings: Settings | None = None) -> bool:
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    return session_exists(_key(wa_id), settings)
+
+
+def cancel_deal_session(wa_id: str, settings: Settings | None = None) -> str:
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _del(wa_id, settings)
     return "Deal posting cancelled. How else can I help? 🙏"
 
 
@@ -180,12 +181,17 @@ def _extract_category_filter(message: str) -> str | None:
 
 
 # ── Start deal posting flow ─────────────────────────────────────
-def start_deal_flow(wa_id: str) -> str:
+def start_deal_flow(wa_id: str, settings: Settings | None = None) -> str:
     """Begin the 'post a deal' conversation."""
-    _deal_sessions[wa_id] = DealSession(
-        wa_id=wa_id,
-        step=DealStep.BUSINESS_LOOKUP,
-    )
+    if settings is None:
+        from config.settings import get_settings
+        settings = get_settings()
+    _save(wa_id, {
+        "wa_id": wa_id,
+        "step": DealStep.BUSINESS_LOOKUP,
+        "data": {},
+        "matches": [],
+    }, settings)
     return (
         "Let's post a deal for your business! 🎉\n\n"
         "First, tell me your *business name* or *phone number* "
@@ -233,32 +239,34 @@ def _parse_duration(msg: str) -> tuple[str, timedelta] | None:
 # ── Main handler ────────────────────────────────────────────────
 def handle_deal_message(wa_id: str, message: str, settings: Settings) -> str:
     """Process a message within an active deal-posting session."""
-    _clean_expired()
-    session = _deal_sessions.get(wa_id)
+    session = _get(wa_id, settings)
     if not session:
         return "No active deal session. Say *'post a deal'* to start."
 
     msg = message.strip()
     if msg.lower() in ("cancel", "stop", "quit", "exit", "nevermind"):
-        return cancel_deal_session(wa_id)
+        return cancel_deal_session(wa_id, settings)
 
-    session.updated_at = time.time()
     return _handle_deal_step(session, msg, settings)
 
 
 # ── Deal posting step handler ───────────────────────────────────
-def _handle_deal_step(session: DealSession, msg: str, settings: Settings) -> str:
-    step = session.step
+def _handle_deal_step(session: dict, msg: str, settings: Settings) -> str:
+    step = session["step"]
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
 
     if step == DealStep.BUSINESS_LOOKUP:
         return _deal_lookup_business(session, msg, settings)
 
     elif step == DealStep.SELECT_BUSINESS:
-        return _deal_select_business(session, msg)
+        return _deal_select_business(session, msg, settings)
 
     elif step == DealStep.TITLE:
-        session.data["title"] = msg
-        session.step = DealStep.DESCRIPTION
+        data["title"] = msg
+        session["data"] = data
+        session["step"] = DealStep.DESCRIPTION
+        _save(wa_id, session, settings)
         return (
             f"Deal title: *{msg}*\n\n"
             "Now give me a short *description* of the deal.\n"
@@ -266,16 +274,20 @@ def _handle_deal_step(session: DealSession, msg: str, settings: Settings) -> str
         )
 
     elif step == DealStep.DESCRIPTION:
-        session.data["description"] = msg
-        session.step = DealStep.DEAL_TYPE
+        data["description"] = msg
+        session["data"] = data
+        session["step"] = DealStep.DEAL_TYPE
+        _save(wa_id, session, settings)
         return f"Got it!\n\n{_deal_type_menu()}"
 
     elif step == DealStep.DEAL_TYPE:
         dt = _parse_deal_type(msg)
         if not dt:
             return f"I didn't catch that.\n\n{_deal_type_menu()}"
-        session.data["deal_type"] = dt
-        session.step = DealStep.DURATION
+        data["deal_type"] = dt
+        session["data"] = data
+        session["step"] = DealStep.DURATION
+        _save(wa_id, session, settings)
         return f"Type: *{DEAL_TYPE_DISPLAY[dt]}*\n\n{_duration_menu()}"
 
     elif step == DealStep.DURATION:
@@ -283,17 +295,21 @@ def _handle_deal_step(session: DealSession, msg: str, settings: Settings) -> str
         if not result:
             return f"Please pick a number.\n\n{_duration_menu()}"
         label, delta = result
-        session.data["duration_label"] = label
-        session.data["duration_delta"] = delta
-        session.step = DealStep.CONFIRM
-        return _deal_confirmation(session)
+        data["duration_label"] = label
+        # Store timedelta as seconds (JSON-serializable)
+        data["duration_seconds"] = int(delta.total_seconds())
+        session["data"] = data
+        session["step"] = DealStep.CONFIRM
+        _save(wa_id, session, settings)
+        return _deal_confirmation(data)
 
     elif step == DealStep.CONFIRM:
         if msg.lower() in ("yes", "y", "confirm", "looks good", "correct", "ok", "👍"):
             return _insert_deal(session, settings)
         elif msg.lower() in ("no", "n", "restart", "start over"):
-            session.step = DealStep.TITLE
-            session.data = {k: v for k, v in session.data.items() if k in ("business",)}
+            session["step"] = DealStep.TITLE
+            session["data"] = {k: v for k, v in data.items() if k in ("business",)}
+            _save(wa_id, session, settings)
             return "No problem! Let's start over.\n\nWhat's the *deal title*? (e.g. \"Weekend Dosa Fest\")"
         else:
             return "Please reply *yes* to post or *no* to start over."
@@ -302,8 +318,10 @@ def _handle_deal_step(session: DealSession, msg: str, settings: Settings) -> str
 
 
 # ── Business lookup for deal posting ────────────────────────────
-def _deal_lookup_business(session: DealSession, msg: str, settings: Settings) -> str:
+def _deal_lookup_business(session: dict, msg: str, settings: Settings) -> str:
     """Find the business this deal belongs to."""
+    wa_id = session["wa_id"]
+    data = session.get("data", {})
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         digits = "".join(c for c in msg if c.isdigit())
@@ -320,8 +338,10 @@ def _deal_lookup_business(session: DealSession, msg: str, settings: Settings) ->
             )
 
         if len(result.data) == 1:
-            session.data["business"] = result.data[0]
-            session.step = DealStep.TITLE
+            data["business"] = result.data[0]
+            session["data"] = data
+            session["step"] = DealStep.TITLE
+            _save(wa_id, session, settings)
             b = result.data[0]
             return (
                 f"Found: *{b['name']}* — {b.get('city', '')}, {b.get('state', '')}\n\n"
@@ -329,26 +349,31 @@ def _deal_lookup_business(session: DealSession, msg: str, settings: Settings) ->
                 "(e.g. \"Weekend Dosa Fest\" or \"Grand Opening — 30% Off\")"
             )
 
-        # Multiple matches
-        session.matches = result.data[:5]
-        session.step = DealStep.SELECT_BUSINESS
+        session["matches"] = result.data[:5]
+        session["step"] = DealStep.SELECT_BUSINESS
+        _save(wa_id, session, settings)
         lines = ["Multiple matches found. Which one? (reply with the number)\n"]
-        for i, b in enumerate(session.matches, 1):
+        for i, b in enumerate(result.data[:5], 1):
             lines.append(f"{i}. *{b['name']}* — {b.get('city', '')}, {b.get('state', '')}")
         return "\n".join(lines)
 
     except Exception as e:
-        logger.error(f"Deal business lookup failed for {session.wa_id}: {e}")
+        logger.error(f"Deal business lookup failed for {wa_id}: {e}")
         return "Sorry, something went wrong. Please try again. 🙏"
 
 
-def _deal_select_business(session: DealSession, msg: str) -> str:
+def _deal_select_business(session: dict, msg: str, settings: Settings) -> str:
+    wa_id = session["wa_id"]
+    matches = session.get("matches", [])
+    data = session.get("data", {})
     try:
         idx = int(msg.strip()) - 1
-        if 0 <= idx < len(session.matches):
-            session.data["business"] = session.matches[idx]
-            session.step = DealStep.TITLE
-            b = session.matches[idx]
+        if 0 <= idx < len(matches):
+            data["business"] = matches[idx]
+            session["data"] = data
+            session["step"] = DealStep.TITLE
+            _save(wa_id, session, settings)
+            b = matches[idx]
             return (
                 f"Selected: *{b['name']}*\n\n"
                 "What's the *deal title*?\n"
@@ -360,16 +385,15 @@ def _deal_select_business(session: DealSession, msg: str) -> str:
 
 
 # ── Confirmation & insert ───────────────────────────────────────
-def _deal_confirmation(session: DealSession) -> str:
-    d = session.data
-    b = d["business"]
+def _deal_confirmation(data: dict) -> str:
+    b = data["business"]
     return (
         "Here's your deal:\n\n"
         f"🏪 *{b['name']}*\n"
-        f"🏷️ *{d['title']}*\n"
-        f"📝 {d['description']}\n"
-        f"📂 {DEAL_TYPE_DISPLAY.get(d['deal_type'], d['deal_type'])}\n"
-        f"⏰ Runs for {d['duration_label']}\n\n"
+        f"🏷️ *{data['title']}*\n"
+        f"📝 {data['description']}\n"
+        f"📂 {DEAL_TYPE_DISPLAY.get(data['deal_type'], data['deal_type'])}\n"
+        f"⏰ Runs for {data['duration_label']}\n\n"
         "Reply *yes* to post or *no* to start over."
     )
 
@@ -429,17 +453,19 @@ def _check_deal_limit(business_id: str, wa_id: str, settings: Settings) -> str |
         return None  # On failure, allow the deal
 
 
-def _insert_deal(session: DealSession, settings: Settings) -> str:
+def _insert_deal(session: dict, settings: Settings) -> str:
     """Insert the deal into Supabase."""
-    d = session.data
-    b = d["business"]
+    data = session["data"]
+    wa_id = session["wa_id"]
+    b = data["business"]
     now = datetime.now(timezone.utc)
-    expires = now + d["duration_delta"]
+    duration_seconds = data.get("duration_seconds", 86400)  # default 1 day
+    expires = now + timedelta(seconds=duration_seconds)
 
     # ── Enforce deal limits ──
-    limit_msg = _check_deal_limit(b["id"], session.wa_id, settings)
+    limit_msg = _check_deal_limit(b["id"], wa_id, settings)
     if limit_msg:
-        del _deal_sessions[session.wa_id]
+        _del(wa_id, settings)
         return limit_msg
 
     try:
@@ -448,30 +474,42 @@ def _insert_deal(session: DealSession, settings: Settings) -> str:
             "id": str(uuid.uuid4()),
             "business_id": b["id"],
             "business_name": b["name"],
-            "title": d["title"],
-            "description": d["description"],
-            "deal_type": d["deal_type"],
+            "title": data["title"],
+            "description": data["description"],
+            "deal_type": data["deal_type"],
             "category": b.get("category"),
             "city": b.get("city"),
             "state": b.get("state"),
             "starts_at": now.isoformat(),
             "expires_at": expires.isoformat(),
             "is_active": True,
-            "posted_by_wa_id": session.wa_id,
+            "posted_by_wa_id": wa_id,
         }
         client.table("deals").insert(row).execute()
-        del _deal_sessions[session.wa_id]
-        logger.info(f"Deal posted by {session.wa_id}: {d['title']} for {b['name']}")
+        _del(wa_id, settings)
+        logger.info(f"Deal posted by {wa_id}: {data['title']} for {b['name']}")
+
+        # Check if business is featured for upgrade nudge
+        is_featured = b.get("is_featured", False)
+        upgrade_nudge = ""
+        if not is_featured:
+            upgrade_nudge = (
+                "\n💡 Want more people to see this?\n"
+                "👉 Featured businesses appear first + in the daily digest\n"
+                "Reply *\"upgrade\"* to activate"
+            )
+
         return (
             f"Your deal is live! 🎉\n\n"
-            f"*{d['title']}* — {b['name']}\n"
-            f"Expires in {d['duration_label']}\n\n"
-            "People in your area will see this 👍\n"
+            f"*{data['title']}* — {b['name']}\n"
+            f"Expires in {data['duration_label']}\n\n"
+            "People in your area will see this 👍"
+            f"{upgrade_nudge}\n\n"
             "Want to post another? Say *\"post a deal\"*"
         )
     except Exception as e:
-        logger.error(f"Failed to insert deal for {session.wa_id}: {e}")
-        del _deal_sessions[session.wa_id]
+        logger.error(f"Failed to insert deal for {wa_id}: {e}")
+        _del(wa_id, settings)
         return "Sorry, something went wrong while posting your deal. Please try again later. 🙏"
 
 
