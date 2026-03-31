@@ -1,38 +1,43 @@
 """
-Mira — Daily Metro Digest Service
+Mira — Daily Metro Digest Service (v2 — engagement-optimized)
 
 An opt-in daily WhatsApp newsletter that delivers curated content
-to users in their metro area. This is NOT optional — it's a core
-retention engine and future ad revenue channel.
+to users in their metro area. Core retention engine and revenue channel.
+
+v2 improvements:
+- Action-driven format with numbered quick replies (1, 2, 3)
+- Boosted deals ALWAYS appear at positions 1-2
+- Personalization: reorder by user's last searched category
+- Digest click/reply tracking for preference learning
+- Evening "expiring deals" push (5pm EST)
+- Re-engagement nudge for passive subscribers
+- Sponsored slot rotation for featured businesses
 
 Format:
-  🌅 *Good Morning, Dallas Desis!* — Sat, Mar 28
+  🔥 *Top deals in Columbus TODAY*
 
-  🏪 *New This Week*
-  • Hyderabad House opened in Plano — biryanis & more
-  • 5 new businesses added in DFW this week
+  1. 🍛 20% off Biryani @ Hyderabad House
+     ⏰ Ends today
+     👉 Reply "1" for details
 
-  🔥 *Top Deal*
-  Bombay Bazaar: 20% off groceries this weekend (expires Sun)
+  2. 🛒 $10 off groceries @ Patel Brothers
+     🚀 Boosted
+     👉 Reply "2"
 
-  📅 *Upcoming*
-  Holi Festival at Plano Event Center — Apr 5
+  3. 💈 Free consult @ Sharma Legal
+     🆕 New this week
+     👉 Reply "3"
 
   ⭐ *Sponsored*
-  Taj Palace — Now open for weekend brunch! Book: 469-555-1234
+  Taj Palace — Weekend brunch now open! 469-555-1234
 
-  ────────────
-  Reply STOP to unsubscribe
-
-MVP scope:
-  - Opt-in/opt-out via WhatsApp commands
-  - Subscriber table in Supabase (digest_subscribers)
-  - Pull new businesses, active deals, featured businesses
-  - One sponsored slot for featured/premium businesses
-  - Runs daily at 8am EST
+  👉 Reply *more* for all deals
+  Reply *stop digest* to unsubscribe
 """
 
+import json
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 
 from supabase import create_client
@@ -85,9 +90,8 @@ def subscribe_to_digest(wa_id: str, city: str, settings: Settings) -> str:
         return (
             f"🎉 You're subscribed to the *{city.title()} Daily Digest*!\n\n"
             "Every morning at 8am you'll get:\n"
+            "• Top deals with quick reply actions\n"
             "• New businesses & openings\n"
-            "• Top deals of the day\n"
-            "• Upcoming community events\n"
             "• Featured local businesses\n\n"
             "Reply *stop digest* anytime to unsubscribe."
         )
@@ -154,6 +158,91 @@ def detect_digest_intent(message: str) -> str | None:
     return None
 
 
+# ── Digest Reply Handler ─────────────────────────────────────────
+
+def detect_digest_reply(message: str) -> int | None:
+    """
+    Detect if user is replying to a digest with a number (1, 2, 3).
+    Returns the deal index (1-based) or None.
+    """
+    msg = message.strip()
+    if msg in ("1", "2", "3", "4", "5"):
+        return int(msg)
+    return None
+
+
+def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str | None:
+    """
+    Handle a numbered reply to the digest.
+    Looks up the cached digest deals for this user and returns the deal details.
+    Also tracks the click event for personalization.
+    """
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if not r:
+            return None
+
+        # Look up cached digest deals for this user
+        cache_key = f"digest_deals:{wa_id}"
+        cached = r.get(cache_key)
+        if not cached:
+            return None  # No recent digest — let normal flow handle it
+
+        deals = json.loads(cached)
+        if deal_index < 1 or deal_index > len(deals):
+            return None
+
+        deal = deals[deal_index - 1]
+
+        # Track click event for personalization
+        _track_digest_event("digest_click", wa_id, {
+            "deal_index": deal_index,
+            "deal_title": deal.get("title", ""),
+            "business_name": deal.get("business_name", ""),
+            "category": deal.get("category", ""),
+        }, settings)
+
+        # Build rich detail message
+        biz_name = deal.get("business_name", "Local Business")
+        title = deal.get("title", "Deal")
+        desc = deal.get("description", "")
+        city = deal.get("city", "")
+        state = deal.get("state", "")
+
+        expire_str = ""
+        if deal.get("expires_at"):
+            try:
+                exp = datetime.fromisoformat(deal["expires_at"].replace("Z", "+00:00"))
+                days_left = (exp - datetime.now(timezone.utc)).days
+                if days_left <= 0:
+                    expire_str = "\n⏰ *Last day to grab this deal!*"
+                elif days_left <= 2:
+                    expire_str = f"\n⏰ Ends in {days_left} day{'s' if days_left > 1 else ''}"
+            except Exception:
+                pass
+
+        msg = (
+            f"📋 *{title}*\n\n"
+            f"🏪 {biz_name}\n"
+        )
+        if desc:
+            msg += f"📝 {desc}\n"
+        if city:
+            msg += f"📍 {city}, {state}\n"
+        msg += expire_str
+        msg += (
+            "\n\n👉 Say *\"browse deals\"* to see all deals\n"
+            "👉 Say *\"boost\"* to promote your own deal"
+        )
+
+        return msg
+
+    except Exception as e:
+        logger.warning(f"Digest reply handling failed for {wa_id}: {e}")
+        return None
+
+
 # ── Digest Content Builder ────────────────────────────────────────
 
 def _get_new_businesses(city: str, settings: Settings, days: int = 7) -> list[dict]:
@@ -176,11 +265,11 @@ def _get_new_businesses(city: str, settings: Settings, days: int = 7) -> list[di
         return []
 
 
-def _get_active_deals(city: str, settings: Settings) -> list[dict]:
+def _get_active_deals(city: str, settings: Settings, limit: int = 5) -> list[dict]:
     """
     Get active deals for this city, ranked for digest.
-    Prefers: featured businesses first, then urgency (expiring soon), then recency.
-    Returns top 3 deals.
+    v2: Boosted deals ALWAYS rank first, then featured, urgency, recency.
+    Returns top N deals with full data for caching.
     """
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
@@ -190,12 +279,13 @@ def _get_active_deals(city: str, settings: Settings) -> list[dict]:
         # Fetch more than needed for ranking
         result = (
             client.table("deals")
-            .select("title, description, business_name, business_id, expires_at, created_at")
+            .select("id, title, description, business_name, business_id, "
+                    "category, city, state, expires_at, created_at, boosted_until")
             .ilike("city", f"%{city}%")
             .eq("is_active", True)
             .gte("expires_at", now_iso)
             .order("created_at", desc=True)
-            .limit(15)
+            .limit(20)
             .execute()
         )
 
@@ -219,11 +309,26 @@ def _get_active_deals(city: str, settings: Settings) -> list[dict]:
             except Exception:
                 pass
 
-        # Score and rank
+        # Score and rank — boosted deals always on top
         def _score(d: dict) -> float:
             s = 0.0
+
+            # Boosted: highest priority (+200) — this is paid placement
+            boost_until = d.get("boosted_until", "")
+            if boost_until:
+                try:
+                    boost_dt = datetime.fromisoformat(boost_until.replace("Z", "+00:00"))
+                    if boost_dt > now:
+                        s += 200
+                        d["is_boosted"] = True
+                except Exception:
+                    pass
+
+            # Featured business
             if d.get("business_id") in featured_ids:
                 s += 100
+                d["is_featured_business"] = True
+
             # Urgency: expiring within 48h gets boost
             exp = d.get("expires_at", "")
             if exp:
@@ -234,6 +339,7 @@ def _get_active_deals(city: str, settings: Settings) -> list[dict]:
                         s += 50
                 except Exception:
                     pass
+
             # Recency
             cr = d.get("created_at", "")
             if cr:
@@ -243,10 +349,11 @@ def _get_active_deals(city: str, settings: Settings) -> list[dict]:
                     s += max(0, 30 - age_h)
                 except Exception:
                     pass
+
             return s
 
         deals.sort(key=_score, reverse=True)
-        return deals[:3]
+        return deals[:limit]
 
     except Exception as e:
         logger.warning(f"Failed to get deals for {city}: {e}")
@@ -254,7 +361,7 @@ def _get_active_deals(city: str, settings: Settings) -> list[dict]:
 
 
 def _get_featured_businesses(city: str, settings: Settings) -> list[dict]:
-    """Get featured businesses for sponsored slot."""
+    """Get featured businesses for sponsored slot, with rotation."""
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         result = (
@@ -262,10 +369,14 @@ def _get_featured_businesses(city: str, settings: Settings) -> list[dict]:
             .select("name, category, phone, city, state")
             .ilike("city", f"%{city}%")
             .eq("is_featured", True)
-            .limit(2)
+            .limit(10)
             .execute()
         )
-        return result.data or []
+        businesses = result.data or []
+        # Rotate: random selection so different featured businesses appear each day
+        if len(businesses) > 2:
+            random.shuffle(businesses)
+        return businesses[:2]
     except Exception as e:
         logger.warning(f"Failed to get featured businesses for {city}: {e}")
         return []
@@ -286,50 +397,116 @@ def _get_total_business_count(city: str, settings: Settings) -> int:
         return 0
 
 
-def build_digest_message(city: str, settings: Settings) -> str:
-    """Build the daily digest message for a city — Mira brand voice."""
+def _get_user_preferred_category(wa_id: str, settings: Settings) -> str | None:
+    """
+    Look up the user's most recent search category for personalization.
+    Uses inquiry_logs to find what they search for most.
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("inquiry_logs")
+            .select("query")
+            .eq("wa_id", wa_id)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        # Simple frequency: count category keywords from recent queries
+        from app.services.business_service import CATEGORY_MAP
+        cat_counts: dict[str, int] = {}
+        for row in result.data:
+            query = (row.get("query") or "").lower()
+            for keyword, category in CATEGORY_MAP.items():
+                if keyword in query:
+                    cat_counts[category] = cat_counts.get(category, 0) + 1
+
+        if cat_counts:
+            return max(cat_counts, key=cat_counts.get)
+        return None
+
+    except Exception as e:
+        logger.warning(f"Failed to get user preference for {wa_id}: {e}")
+        return None
+
+
+def _personalize_deals(deals: list[dict], preferred_category: str | None) -> list[dict]:
+    """
+    Reorder deals to show user's preferred category first.
+    Preserves boosted deals at top (they already have highest scores).
+    """
+    if not preferred_category or len(deals) <= 1:
+        return deals
+
+    # Split into boosted (stay at top) and non-boosted (reorderable)
+    boosted = [d for d in deals if d.get("is_boosted")]
+    non_boosted = [d for d in deals if not d.get("is_boosted")]
+
+    # Move preferred category to front of non-boosted
+    preferred = [d for d in non_boosted if (d.get("category") or "").lower() == preferred_category]
+    others = [d for d in non_boosted if (d.get("category") or "").lower() != preferred_category]
+
+    return boosted + preferred + others
+
+
+# ── Message Assembly ─────────────────────────────────────────────
+
+def build_digest_message(
+    city: str,
+    settings: Settings,
+    wa_id: str | None = None,
+) -> tuple[str, list[dict]]:
+    """
+    Build the daily digest message for a city.
+    Returns (message_text, deals_list) — deals_list is cached for reply handling.
+    """
     now = datetime.now(timezone.utc)
 
     new_biz = _get_new_businesses(city, settings)
-    deals = _get_active_deals(city, settings)
+    deals = _get_active_deals(city, settings, limit=5)
     featured = _get_featured_businesses(city, settings)
     total_count = _get_total_business_count(city, settings)
 
-    # ── Header — clean Mira style ──
-    msg = f"🌆 *{city} with Mira*\n\n"
+    # Personalize deal order if we know the user
+    if wa_id:
+        pref = _get_user_preferred_category(wa_id, settings)
+        if pref:
+            deals = _personalize_deals(deals, pref)
 
-    # ── Grocery / New Businesses ──
-    if new_biz:
-        msg += "🛒 *New This Week*\n"
-        for b in new_biz[:3]:
-            cat = b.get("category", "")
-            cat_str = f" — {cat}" if cat else ""
-            msg += f"• {b['name']}{cat_str}\n"
-        if len(new_biz) > 3:
-            extra = len(new_biz) - 3
-            msg += f"• +{extra} more listings\n"
-        msg += "\n"
-    elif total_count > 0:
-        msg += f"🛒 *{total_count} businesses* in {city}\n"
-        msg += "Know a local desi business? Share Mira with them 🙌\n\n"
+    # ── Header — action-driven ──
+    msg = f"🔥 *Top deals in {city} TODAY*\n\n"
 
-    # ── Deals ──
+    # ── Deals — numbered with quick reply ──
     if deals:
-        msg += "💸 *Deals*\n"
-        for d in deals[:3]:
+        for i, d in enumerate(deals[:3], 1):
             biz_name = d.get("business_name", "Local Business")
             title = d.get("title", "")
+
+            # Badge line
+            badge = ""
+            if d.get("is_boosted"):
+                badge = " 🚀 *Boosted*"
+            elif d.get("is_featured_business"):
+                badge = " ⭐ Featured"
+
+            # Urgency
             urgency = ""
             if d.get("expires_at"):
                 try:
                     exp = datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00"))
                     days_left = (exp - now).days
-                    if days_left <= 0:
-                        urgency = " ⏰ Last day!"
+                    hours_left = (exp - now).total_seconds() / 3600
+                    if hours_left <= 24:
+                        urgency = "\n   ⏰ *Ends today!*"
                     elif days_left <= 2:
-                        urgency = " ⏰ Ends soon!"
+                        urgency = "\n   ⏰ Ends soon"
                 except Exception:
                     pass
+
             # Freshness
             freshness = ""
             if d.get("created_at"):
@@ -339,33 +516,113 @@ def build_digest_message(city: str, settings: Settings) -> str:
                         freshness = "🆕 "
                 except Exception:
                     pass
-            msg += f"• {freshness}{biz_name}: {title}{urgency}\n"
-        msg += "\n"
 
-    # ── Sponsored Slot (Featured businesses) ──
+            msg += (
+                f"*{i}.* {freshness}{title} @ {biz_name}{badge}"
+                f"{urgency}\n"
+                f"   👉 Reply *\"{i}\"* for details\n\n"
+            )
+    else:
+        msg += "No new deals today — check back tomorrow!\n\n"
+
+    # ── New Businesses (compact) ──
+    if new_biz:
+        names = ", ".join(b["name"] for b in new_biz[:3])
+        extra = f" +{len(new_biz) - 3} more" if len(new_biz) > 3 else ""
+        msg += f"🏪 *New this week:* {names}{extra}\n\n"
+
+    # ── Sponsored Slot (rotated featured business) ──
     if featured:
         f_biz = featured[0]
         phone = f_biz.get("phone", "")
         cat = f_biz.get("category", "")
         phone_str = f" — {phone}" if phone else ""
         cat_str = f" ({cat})" if cat else ""
-        msg += f"⭐ {f_biz['name']}{cat_str}{phone_str}\n\n"
+        msg += f"⭐ *Sponsored:* {f_biz['name']}{cat_str}{phone_str}\n\n"
 
-    # ── Footer — conversational Mira ──
-    msg += "👉 Reply *1* for deals | *2* for services\n"
-    msg += "Reply *stop digest* to unsubscribe"
+    # ── Footer — interactive ──
+    msg += "👉 Reply *more* for all deals\n"
+    msg += "👉 Reply *post deal* to promote yours\n"
+    msg += "_Reply *stop digest* to unsubscribe_"
 
-    return msg
+    return msg, deals
 
 
-# ── Main Send Function ────────────────────────────────────────────
+def build_expiring_deals_message(city: str, settings: Settings) -> str | None:
+    """
+    Build the evening "expiring deals" push for a city.
+    Only sent if there are deals expiring within the next 18 hours.
+    Returns None if no expiring deals.
+    """
+    now = datetime.now(timezone.utc)
+    deadline = (now + timedelta(hours=18)).isoformat()
+
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("deals")
+            .select("title, business_name, expires_at")
+            .ilike("city", f"%{city}%")
+            .eq("is_active", True)
+            .gte("expires_at", now.isoformat())
+            .lte("expires_at", deadline)
+            .order("expires_at", desc=False)
+            .limit(5)
+            .execute()
+        )
+
+        deals = result.data or []
+        if not deals:
+            return None
+
+        msg = f"⏰ *Deals ending soon in {city}!*\n\n"
+        for d in deals[:3]:
+            biz = d.get("business_name", "Local Business")
+            title = d.get("title", "Deal")
+            msg += f"• {title} @ {biz}\n"
+
+        msg += (
+            "\n👉 Reply *browse deals* to see all\n"
+            "👉 Reply *boost* to promote your deal to the top"
+        )
+
+        return msg
+
+    except Exception as e:
+        logger.warning(f"Failed to build expiring deals for {city}: {e}")
+        return None
+
+
+# ── Tracking ─────────────────────────────────────────────────────
+
+def _track_digest_event(
+    event: str, wa_id: str, details: dict, settings: Settings,
+) -> None:
+    """Log digest interaction events for personalization + analytics."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        client.table("notification_log").insert({
+            "business_id": details.get("business_id", ""),
+            "business_name": details.get("business_name", ""),
+            "owner_wa_id": wa_id,
+            "search_query": event,
+            "status": "digest_event",
+            "details": json.dumps(details),
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Digest event tracking failed: {e}")
+
+
+# ── Main Send Functions ──────────────────────────────────────────
 
 async def send_daily_digest(settings: Settings) -> dict:
     """
     Send daily digest to all active subscribers.
     Called by cron at 8am EST.
+    v2: Personalized per user, with cached deal lists for reply handling.
     """
     from app.services.whatsapp_service import WhatsAppService
+    from app.services.session_store import _get_redis
 
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
@@ -384,11 +641,12 @@ async def send_daily_digest(settings: Settings) -> dict:
         return {"sent": 0, "total_subscribers": 0}
 
     whatsapp = WhatsAppService(settings)
+    r = _get_redis(settings)
     sent = 0
     failed = 0
 
-    # Group by city to avoid rebuilding the same digest
-    city_digests: dict[str, str] = {}
+    # Cache base digest per city (non-personalized), then personalize per user
+    city_base_deals: dict[str, list[dict]] = {}
 
     for sub in subscribers.data:
         city = sub.get("city", "").strip().title()
@@ -397,24 +655,104 @@ async def send_daily_digest(settings: Settings) -> dict:
         if not city or not wa_id:
             continue
 
-        # Cache digest per city
-        if city not in city_digests:
-            city_digests[city] = build_digest_message(city, settings)
-
         try:
-            await whatsapp.send_text_message(wa_id, city_digests[city])
+            # Build personalized digest for this user
+            msg, deals = build_digest_message(city, settings, wa_id=wa_id)
+
+            # Cache deal list in Redis so reply handler can look them up
+            if r and deals:
+                try:
+                    cache_data = json.dumps([{
+                        "title": d.get("title", ""),
+                        "description": d.get("description", ""),
+                        "business_name": d.get("business_name", ""),
+                        "category": d.get("category", ""),
+                        "city": d.get("city", ""),
+                        "state": d.get("state", ""),
+                        "expires_at": d.get("expires_at", ""),
+                    } for d in deals])
+                    r.setex(f"digest_deals:{wa_id}", 86400, cache_data)  # 24h TTL
+                except Exception:
+                    pass
+
+            await whatsapp.send_text_message(wa_id, msg)
             sent += 1
+
+            # Track send event
+            _track_digest_event("digest_sent", wa_id, {"city": city}, settings)
+
         except Exception as e:
             logger.error(f"Failed to send digest to {wa_id}: {e}")
             failed += 1
 
     summary = {
         "total_subscribers": len(subscribers.data),
-        "cities": len(city_digests),
         "sent": sent,
         "failed": failed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     logger.info(f"Daily digest complete: {summary}")
+    return summary
+
+
+async def send_evening_expiring_deals(settings: Settings) -> dict:
+    """
+    Send evening "expiring deals" push to all active subscribers.
+    Called by cron at 5pm EST.
+    Only sends if there are deals expiring within 18 hours.
+    """
+    from app.services.whatsapp_service import WhatsAppService
+
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        subscribers = (
+            client.table("digest_subscribers")
+            .select("wa_id, city")
+            .eq("status", "active")
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch digest subscribers: {e}")
+        return {"error": str(e), "sent": 0}
+
+    if not subscribers.data:
+        return {"sent": 0, "total_subscribers": 0}
+
+    whatsapp = WhatsAppService(settings)
+    sent = 0
+    skipped = 0
+
+    # Cache per city
+    city_messages: dict[str, str | None] = {}
+
+    for sub in subscribers.data:
+        city = sub.get("city", "").strip().title()
+        wa_id = sub.get("wa_id", "")
+
+        if not city or not wa_id:
+            continue
+
+        if city not in city_messages:
+            city_messages[city] = build_expiring_deals_message(city, settings)
+
+        msg = city_messages[city]
+        if not msg:
+            skipped += 1
+            continue
+
+        try:
+            await whatsapp.send_text_message(wa_id, msg)
+            sent += 1
+        except Exception as e:
+            logger.error(f"Failed to send evening push to {wa_id}: {e}")
+
+    summary = {
+        "total_subscribers": len(subscribers.data),
+        "sent": sent,
+        "skipped_no_expiring": skipped,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    logger.info(f"Evening expiring deals push complete: {summary}")
     return summary

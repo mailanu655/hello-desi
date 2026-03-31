@@ -75,6 +75,22 @@ async def send_daily_digest(
     return {"status": "ok", "summary": summary}
 
 
+@router.post("/tasks/evening-deals", dependencies=[Depends(verify_cron_secret)])
+async def send_evening_deals(
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Send evening "expiring deals" push to digest subscribers.
+    Called by cron daily at 5pm EST. Only sends if deals are expiring.
+    """
+    from app.services.digest_service import send_evening_expiring_deals
+
+    logger.info("Starting evening expiring deals push...")
+    summary = await send_evening_expiring_deals(settings)
+    logger.info(f"Evening push complete: {summary}")
+    return {"status": "ok", "summary": summary}
+
+
 @router.post("/tasks/expire-deals", dependencies=[Depends(verify_cron_secret)])
 async def expire_deals(
     settings: Settings = Depends(get_settings),

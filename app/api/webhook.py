@@ -402,12 +402,25 @@ async def _process_message(
             await _wa().send_text_message(wa_id, response_text)
             return
 
-        # Digest subscription
+        # Digest reply (numbered quick replies: 1, 2, 3)
         from app.services.digest_service import (
             detect_digest_intent,
+            detect_digest_reply,
+            handle_digest_reply,
             subscribe_to_digest,
             unsubscribe_from_digest,
         )
+
+        digest_reply_index = detect_digest_reply(message_body)
+        if digest_reply_index:
+            response_text = handle_digest_reply(wa_id, digest_reply_index, settings)
+            if response_text:
+                logger.info(f"[{request_id}] Digest reply #{digest_reply_index} from {wa_id}")
+                await _wa().send_text_message(wa_id, response_text)
+                return
+            # If no cached digest, fall through to normal flow
+
+        # Digest subscription
 
         digest_intent = detect_digest_intent(message_body)
         if digest_intent == "unsubscribe":
