@@ -120,8 +120,17 @@ async def stripe_webhook(request: Request):
         return {"status": "ok", "message": "duplicate event skipped", "previous_status": prev_status}
 
     # ── Route events ─────────────────────────────────────────────
+    # Critical events (payment/activation) return 500 on failure so Stripe retries.
+    # Non-critical events (notifications) return 200 even on failure.
+    CRITICAL_EVENTS = {
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    }
+
     try:
-        if event_type == "checkout.session.completed":
+        if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
             await _handle_checkout_completed(data, event_id, settings)
 
         elif event_type == "customer.subscription.updated":
@@ -139,14 +148,10 @@ async def stripe_webhook(request: Request):
     except Exception as e:
         logger.error(f"Stripe webhook handler error for {event_type}: {e}")
 
-        # Log the failure for debugging
-        await _log_stripe_event(
-            event_id, event_type, settings,
-            raw_data={"error": str(e)},
-            status="failed",
-        )
+        # Dead-letter: store failed event for manual replay
+        await _store_dead_letter(event_id, event_type, data, str(e), settings)
 
-        # Alert: send failure notification to admin via WhatsApp
+        # Alert admin
         await _send_admin_alert(
             f"⚠️ Stripe webhook *failed*\n\n"
             f"Event: `{event_type}`\nID: `{event_id}`\n"
@@ -154,7 +159,11 @@ async def stripe_webhook(request: Request):
             settings,
         )
 
-        # Return 200 anyway so Stripe doesn't retry indefinitely
+        # Critical events: return 500 so Stripe retries (up to ~3 days)
+        if event_type in CRITICAL_EVENTS:
+            raise HTTPException(status_code=500, detail=f"Handler failed: {str(e)[:100]}")
+
+        # Non-critical: return 200 to prevent infinite retry
         return {"status": "error", "message": str(e)}
 
     return {"status": "ok"}
@@ -221,6 +230,25 @@ async def _log_stripe_event(
         logger.warning(f"Failed to log stripe event {event_id}: {e}")
 
 
+async def _store_dead_letter(
+    event_id: str, event_type: str, data: dict,
+    error: str, settings,
+):
+    """Store failed event for manual replay / debugging."""
+    try:
+        from supabase import create_client
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        client.table("stripe_events").upsert({
+            "id": event_id,
+            "event_type": event_type,
+            "raw_data": {"payload": data, "error": error},
+            "status": "dead_letter",
+        }).execute()
+        logger.info(f"Dead-lettered event {event_id}")
+    except Exception as e:
+        logger.error(f"Failed to dead-letter event {event_id}: {e}")
+
+
 # ══════════════════════════════════════════════════════════════════
 # Event handlers
 # ══════════════════════════════════════════════════════════════════
@@ -248,8 +276,8 @@ async def _handle_checkout_completed(session: dict, event_id: str, settings):
         f"amount={amount_total}"
     )
 
-    # Determine which plan based on amount
-    plan = _amount_to_plan(amount_total)
+    # Determine which plan (price_id → metadata → amount fallback)
+    plan = _resolve_plan(session)
 
     if not plan:
         logger.warning(f"Unknown plan amount {amount_total} cents — logging event only")
@@ -361,8 +389,15 @@ async def _handle_subscription_updated(subscription: dict, event_id: str, settin
     stripe_sub_id = subscription.get("id")
     status = subscription.get("status")  # active, past_due, canceled, etc.
     items_data = (subscription.get("items") or {}).get("data", [])
-    amount = (items_data[0].get("price") or {}).get("unit_amount", 0) if items_data else 0
-    plan = _amount_to_plan(amount)
+
+    # Resolve plan: prefer price_id mapping, fall back to amount
+    plan = None
+    if items_data:
+        price_id = (items_data[0].get("price") or {}).get("id", "")
+        plan = PRICE_TO_PLAN.get(price_id)
+        if not plan:
+            amount = (items_data[0].get("price") or {}).get("unit_amount", 0)
+            plan = _amount_to_plan_fallback(amount)
 
     logger.info(f"Subscription updated: {stripe_sub_id} → status={status}, plan={plan}")
 
@@ -536,11 +571,18 @@ async def _handle_deal_boost_payment(session: dict, event_id: str, customer_emai
 
     wa_id = None
 
-    # Strategy 1: metadata (future-proof — we can add metadata to payment links)
-    metadata = session.get("metadata") or {}
-    if metadata.get("wa_id"):
-        wa_id = metadata["wa_id"]
-        logger.info(f"Deal boost: found wa_id from metadata: {wa_id}")
+    # Strategy 0: client_reference_id (set on payment link URL — most reliable)
+    client_ref = session.get("client_reference_id")
+    if client_ref:
+        wa_id = client_ref
+        logger.info(f"Deal boost: found wa_id from client_reference_id: {wa_id}")
+
+    # Strategy 1: metadata (future-proof — for Checkout Sessions with metadata)
+    if not wa_id:
+        metadata = session.get("metadata") or {}
+        if metadata.get("wa_id"):
+            wa_id = metadata["wa_id"]
+            logger.info(f"Deal boost: found wa_id from metadata: {wa_id}")
 
     # Strategy 2: match by email → business → wa_id
     if not wa_id and customer_email:
@@ -680,10 +722,46 @@ async def _send_activation_confirmation(wa_id: str, plan: str, biz_name: str, se
         logger.warning(f"Failed to send activation confirmation: {e}")
 
 
-def _amount_to_plan(amount_cents: int) -> str | None:
-    """Map Stripe amount (in cents) to our plan name."""
+# ── Price ID → Plan mapping (immune to price changes / discounts / tax) ──
+PRICE_TO_PLAN = {
+    "price_1TGTKcCytUHyGW3SBY7MwnUS": "featured",    # $15/mo
+    "price_1TGTLyCytUHyGW3SKghaqije": "premium",      # $30/mo
+    "price_1TGpqbCytUHyGW3SY56Trvau": "deal_boost",   # $4.99 one-time
+}
+
+
+def _resolve_plan(session: dict) -> str | None:
+    """
+    Determine plan from checkout session.
+
+    Strategy (ordered by reliability):
+    1. price_id from line_items (most reliable — immune to discounts/tax)
+    2. metadata.plan (explicit, if set)
+    3. amount fallback (legacy safety net)
+    """
+    # Strategy 1: price_id from line_items
+    line_items = session.get("line_items", {})
+    items_data = line_items.get("data", []) if isinstance(line_items, dict) else []
+    for item in items_data:
+        price_obj = item.get("price") or {}
+        price_id = price_obj.get("id", "")
+        if price_id in PRICE_TO_PLAN:
+            return PRICE_TO_PLAN[price_id]
+
+    # Strategy 2: metadata
+    metadata = session.get("metadata") or {}
+    if metadata.get("plan"):
+        return metadata["plan"]
+
+    # Strategy 3: amount fallback (handles legacy links / edge cases)
+    amount = session.get("amount_total", 0)
+    return _amount_to_plan_fallback(amount)
+
+
+def _amount_to_plan_fallback(amount_cents: int) -> str | None:
+    """Legacy fallback: map amount to plan. Use _resolve_plan() instead."""
     if amount_cents == 499:
-        return "deal_boost"  # One-time deal boost ($4.99)
+        return "deal_boost"
     elif amount_cents == 1500:
         return "featured"
     elif amount_cents == 3000:
@@ -691,7 +769,7 @@ def _amount_to_plan(amount_cents: int) -> str | None:
     elif amount_cents == 0:
         return "free"
     else:
-        logger.warning(f"Unknown amount: {amount_cents} cents")
+        logger.warning(f"Unknown plan amount: {amount_cents} cents")
         return None
 
 

@@ -1381,6 +1381,9 @@ def boost_deal(wa_id: str, settings: Settings) -> str:
             "deal_title": deal["title"],
         }, settings)
 
+        # Append client_reference_id so Stripe webhook can identify the buyer
+        payment_url = f"{BOOST_PAYMENT_LINK}?client_reference_id={wa_id}"
+
         return (
             f"🚀 *Boost: {deal['title']}*\n\n"
             "Get *3–5x more visibility* for just *$4.99*:\n\n"
@@ -1388,7 +1391,7 @@ def boost_deal(wa_id: str, settings: Settings) -> str:
             "🔥 Show a *🚀 Boosted* badge on your deal\n"
             "📩 Featured in today's *daily digest*\n"
             "⏳ Lasts *24 hours* — limited-time exposure\n\n"
-            f"👉 Tap to boost now:\n{BOOST_PAYMENT_LINK}\n\n"
+            f"👉 Tap to boost now:\n{payment_url}\n\n"
             "⚡ Activates *instantly* after payment."
         )
 
