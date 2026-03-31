@@ -31,6 +31,10 @@ from app.services.session_store import (
     acquire_user_lock,
     release_user_lock,
     check_rate_limit_atomic,
+    check_burst_limit,
+    get_daily_message_count,
+    get_user_daily_limit,
+    track_token_usage,
     delete_session,
 )
 from app.services.whatsapp_service import WhatsAppService
@@ -41,8 +45,8 @@ from config.settings import Settings, get_settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Daily message limit (matches user_state_service.DAILY_MESSAGE_LIMIT)
-DAILY_MESSAGE_LIMIT = 50
+# Daily message limit is now tiered (50/100/200) via get_user_daily_limit()
+# Kept for reference; actual limit is fetched per-user from session_store
 
 
 @router.get("/webhook")
@@ -223,15 +227,36 @@ async def _process_message(
             )
             return
 
-        # ── 4e. Rate limiting (atomic Redis + Supabase fallback) ─
-        # Try atomic Redis first; fall back to Supabase if Redis unavailable
-        if not check_rate_limit_atomic(wa_id, DAILY_MESSAGE_LIMIT, settings):
-            logger.info(f"[{request_id}] Rate limited {wa_id}")
+        # ── 4e-i. Burst limiter (10 msg/min) ──────────────────────
+        if not check_burst_limit(wa_id, settings, per_minute=10):
+            logger.info(f"[{request_id}] Burst limited {wa_id}")
+            await _wa().send_text_message(
+                wa_id,
+                "You're sending messages too quickly 😅\n"
+                "Please wait a few seconds and try again."
+            )
+            return
+
+        # ── 4e-ii. Daily rate limit (tiered by user type) ─────────
+        user_limit = get_user_daily_limit(wa_id, settings)
+        if not check_rate_limit_atomic(wa_id, user_limit, settings):
+            logger.info(f"[{request_id}] Rate limited {wa_id} (limit={user_limit})")
             await _wa().send_text_message(
                 wa_id,
                 "You've reached today's limit 🙏\nCome back tomorrow or try again later!"
             )
             return
+
+        # ── 4e-iii. Grace warning near limit ──────────────────────
+        daily_count = get_daily_message_count(wa_id, settings)
+        grace_threshold = user_limit - 5  # Warn 5 messages before limit
+        if daily_count == grace_threshold:
+            await _wa().send_text_message(
+                wa_id,
+                f"⚠️ You're nearing your daily limit "
+                f"({daily_count}/{user_limit} messages)\n\n"
+                "Try shorter queries to make the most of your remaining messages 👍"
+            )
 
         # Still call Supabase rate limit to keep counters updated for analytics
         check_rate_limit(wa_id, settings)

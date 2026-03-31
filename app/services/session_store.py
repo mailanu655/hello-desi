@@ -227,6 +227,113 @@ def check_rate_limit_atomic(wa_id: str, daily_limit: int, settings: Settings) ->
         return True  # No Redis = no atomic rate limit, fall back to Supabase check
 
 
+def check_burst_limit(wa_id: str, settings: Settings, per_minute: int = 10) -> bool:
+    """
+    Per-minute burst limiter using Redis INCR.
+
+    Returns True if user is WITHIN burst limits (allowed).
+    Returns False if user is sending too fast (> per_minute msgs in 60s).
+    Prevents API cost spikes from rapid-fire messaging.
+    """
+    key = f"burst:{wa_id}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            count = r.incr(key)
+            if count == 1:
+                r.expire(key, 60)  # 60-second window
+            return count <= per_minute
+        except Exception as e:
+            logger.warning(f"Redis burst limit failed for {wa_id}: {e}")
+            return True
+    else:
+        return True  # No Redis = no burst limit
+
+
+def get_daily_message_count(wa_id: str, settings: Settings) -> int:
+    """
+    Get current daily message count for grace warning logic.
+    Returns 0 if Redis unavailable or key doesn't exist.
+    """
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"rate:{wa_id}:{today}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            count = r.get(key)
+            return int(count) if count else 0
+        except Exception:
+            return 0
+    return 0
+
+
+def get_user_daily_limit(wa_id: str, settings: Settings) -> int:
+    """
+    Get the daily message limit for a user based on their type.
+
+    Tiers:
+      - Premium subscriber: 200
+      - Business owner (has registered business): 100
+      - Normal user: 50
+    """
+    try:
+        from supabase import create_client
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+        # Check for active premium subscription first
+        sub = (
+            client.table("subscriptions")
+            .select("plan")
+            .eq("wa_id", wa_id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        )
+        if sub.data:
+            plan = sub.data[0].get("plan", "")
+            if plan in ("premium", "featured"):
+                return 200
+
+        # Check if business owner
+        biz = (
+            client.table("businesses")
+            .select("id")
+            .ilike("source_id", f"%{wa_id}%")
+            .limit(1)
+            .execute()
+        )
+        if biz.data:
+            return 100
+
+    except Exception as e:
+        logger.warning(f"Failed to determine user tier for {wa_id}: {e}")
+
+    return 50  # Default: normal user
+
+
+def track_token_usage(wa_id: str, tokens: int, settings: Settings) -> None:
+    """
+    Track LLM token usage per user per day.
+    Used to detect expensive users and optimize routing.
+    """
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"tokens:{wa_id}:{today}"
+    r = _get_redis(settings)
+
+    if r:
+        try:
+            r.incrby(key, tokens)
+            r.expire(key, 86400)
+        except Exception:
+            pass  # Non-critical — best effort
+
+
 def session_exists(key: str, settings: Settings) -> bool:
     """Check if a session exists (without refreshing TTL)."""
     r = _get_redis(settings)

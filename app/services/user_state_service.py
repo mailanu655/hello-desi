@@ -18,11 +18,31 @@ from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# ── In-memory cache (optional optimization to avoid DB hit on every message) ──
-_seen_cache: set[str] = set()
+# ── In-memory cache with TTL (avoids DB hit on every message) ──
+# Entries auto-expire after 60 seconds to prevent stale state across instances
+_seen_cache: dict[str, float] = {}  # wa_id → timestamp
+_CACHE_TTL = 60.0  # seconds
 
-# ── Daily message rate limit ──
-DAILY_MESSAGE_LIMIT = 50  # generous for now; tighten later
+# ── Daily message rate limit (default; overridden by tiered limits) ──
+DAILY_MESSAGE_LIMIT = 50
+
+
+def _cache_is_valid(wa_id: str) -> bool:
+    """Check if a cache entry exists and hasn't expired."""
+    import time
+    ts = _seen_cache.get(wa_id)
+    if ts is None:
+        return False
+    if time.time() - ts > _CACHE_TTL:
+        del _seen_cache[wa_id]
+        return False
+    return True
+
+
+def _cache_set(wa_id: str) -> None:
+    """Add a user to the cache with current timestamp."""
+    import time
+    _seen_cache[wa_id] = time.time()
 
 
 def is_first_time_user(wa_id: str, name: str, settings: Settings) -> bool:
@@ -31,8 +51,8 @@ def is_first_time_user(wa_id: str, name: str, settings: Settings) -> bool:
     Uses Supabase user_state table with in-memory cache for performance.
     Returns True if this is their first message ever.
     """
-    # Fast path: if we've seen them this session, skip DB
-    if wa_id in _seen_cache:
+    # Fast path: if we've seen them recently, skip DB
+    if _cache_is_valid(wa_id):
         return False
 
     try:
@@ -49,7 +69,7 @@ def is_first_time_user(wa_id: str, name: str, settings: Settings) -> bool:
 
         if result.data:
             # Existing user — update last_active and increment message count
-            _seen_cache.add(wa_id)
+            _cache_set(wa_id)
             client.table("user_state").update({
                 "last_active": datetime.now(timezone.utc).isoformat(),
                 "name": name,
