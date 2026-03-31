@@ -654,6 +654,14 @@ async def _handle_deal_boost_payment(session: dict, event_id: str, customer_emai
         )
         return
 
+    # Log payment completed BEFORE activation (fills the attempted→paid→activated gap)
+    from app.services.deals_service import _log_deal_event
+    _log_deal_event("boost_payment_completed", wa_id, {
+        "event_id": event_id,
+        "session_id": session.get("id"),
+        "customer_email": customer_email,
+    }, settings)
+
     # Activate the boost
     success = activate_boost_for_deal(wa_id, settings)
 
