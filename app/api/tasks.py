@@ -96,6 +96,88 @@ async def expire_deals(
     return {"status": "ok", "summary": summary, "orphan_cleanup": orphan_summary}
 
 
+@router.post("/tasks/replay-stripe-event/{event_id}", dependencies=[Depends(verify_cron_secret)])
+async def replay_stripe_event(
+    event_id: str,
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Manually replay a dead-lettered or failed Stripe event.
+    Fetches the event payload from stripe_events table and re-runs the handler.
+    """
+    from supabase import create_client
+
+    client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+    # Fetch the stored event
+    result = (
+        client.table("stripe_events")
+        .select("*")
+        .eq("id", event_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
+
+    stored = result.data[0]
+    event_type = stored.get("event_type", "")
+    raw_data = stored.get("raw_data") or {}
+    payload = raw_data.get("payload")
+
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Event {event_id} has no stored payload to replay"
+        )
+
+    if stored.get("status") == "success":
+        return {
+            "status": "skipped",
+            "message": f"Event {event_id} already processed successfully",
+        }
+
+    logger.info(f"Replaying Stripe event: {event_id} ({event_type})")
+
+    # Import handlers from stripe_webhook
+    from app.api.stripe_webhook import (
+        _handle_checkout_completed,
+        _handle_subscription_updated,
+        _handle_subscription_deleted,
+        _handle_payment_failed,
+    )
+
+    try:
+        if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+            await _handle_checkout_completed(payload, event_id, settings)
+        elif event_type == "customer.subscription.updated":
+            await _handle_subscription_updated(payload, event_id, settings)
+        elif event_type == "customer.subscription.deleted":
+            await _handle_subscription_deleted(payload, event_id, settings)
+        elif event_type == "invoice.payment_failed":
+            await _handle_payment_failed(payload, event_id, settings)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported event type for replay: {event_type}"
+            )
+
+        # Mark as replayed successfully
+        client.table("stripe_events").update({
+            "status": "replayed",
+        }).eq("id", event_id).execute()
+
+        logger.info(f"Successfully replayed event {event_id}")
+        return {"status": "ok", "message": f"Event {event_id} replayed successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Replay failed for {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Replay failed: {str(e)[:200]}")
+
+
 @router.post("/tasks/nudge-inactive", dependencies=[Depends(verify_cron_secret)])
 async def nudge_inactive_businesses(
     settings: Settings = Depends(get_settings),
@@ -146,10 +228,18 @@ async def get_analytics(
         biz_counts[name] = biz_counts.get(name, 0) + 1
     top_5 = sorted(biz_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    # New: user state + notification stats
+    # User state + notification stats
     users = client.table("user_state").select("wa_id", count="exact").execute()
     notifs_sent = client.table("notification_log").select("id", count="exact").eq("status", "sent").execute()
     notifs_failed = client.table("notification_log").select("id", count="exact").eq("status", "failed").execute()
+
+    # Boost funnel counters
+    boost_attempted = client.table("notification_log").select("id", count="exact").eq("status", "conversion_event").ilike("details", "%boost_initiated%").execute()
+    boost_paid = client.table("stripe_events").select("id", count="exact").eq("plan", "deal_boost").eq("status", "success").execute()
+    boost_activated = client.table("notification_log").select("id", count="exact").eq("status", "conversion_event").ilike("details", "%deal_boosted%").execute()
+
+    # Stripe dead letters (needs attention)
+    dead_letters = client.table("stripe_events").select("id", count="exact").eq("status", "dead_letter").execute()
 
     return {
         "status": "ok",
@@ -169,4 +259,10 @@ async def get_analytics(
             "failed": notifs_failed.count or 0,
         },
         "top_businesses_this_week": [{"name": n, "inquiries": c} for n, c in top_5],
+        "boost_funnel": {
+            "attempted": boost_attempted.count or 0,
+            "paid": boost_paid.count or 0,
+            "activated": boost_activated.count or 0,
+        },
+        "stripe_dead_letters": dead_letters.count or 0,
     }

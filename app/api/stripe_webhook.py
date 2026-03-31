@@ -234,7 +234,7 @@ async def _store_dead_letter(
     event_id: str, event_type: str, data: dict,
     error: str, settings,
 ):
-    """Store failed event for manual replay / debugging."""
+    """Store failed event for manual replay / debugging, and alert via Slack."""
     try:
         from supabase import create_client
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
@@ -247,6 +247,16 @@ async def _store_dead_letter(
         logger.info(f"Dead-lettered event {event_id}")
     except Exception as e:
         logger.error(f"Failed to dead-letter event {event_id}: {e}")
+
+    # Alert: Slack + admin WhatsApp so dead letters never go unnoticed
+    await _send_admin_alert(
+        f"🚨 *Stripe event dead-lettered*\n\n"
+        f"Event: `{event_type}`\n"
+        f"ID: `{event_id}`\n"
+        f"Error: {error[:200]}\n\n"
+        f"Replay: `POST /tasks/replay-stripe-event/{event_id}`",
+        settings,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
