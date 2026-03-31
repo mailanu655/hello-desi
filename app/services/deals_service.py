@@ -879,11 +879,11 @@ def _insert_deal(session: dict, settings: Settings) -> str:
         upgrade_nudge = ""
         if not is_featured:
             upgrade_nudge = (
-                "\n\n💡 Want more people to see this?\n"
-                "🚀 *Boost this deal* — $5 for 24 hours at the top\n"
-                "⭐ *Featured* — $15/month (top placement + daily digest)\n"
-                "🚀 *Premium* — $30/month (unlimited deals + priority)\n"
-                "👉 Reply *\"boost\"* or *\"upgrade\"* to activate"
+                "\n\n💡 *Want 3–5x more views on this deal?*\n"
+                "🚀 *Boost* — $4.99 for 24hrs at the top\n"
+                "⭐ *Featured* — $15/mo (top placement + daily digest)\n"
+                "👑 *Premium* — $30/mo (unlimited deals + analytics)\n"
+                "👉 Reply *\"boost\"* or *\"upgrade\"* to get started"
             )
 
         return (
@@ -1129,17 +1129,15 @@ def format_deals_for_whatsapp(deals: list[dict], query_type: str = "all") -> str
                 pass
         expire_line = f"\n   {expire_str}" if expire_str else ""
         featured = " ⭐" if d.get("is_featured_business") else ""
-        # Boost badge + countdown
-        boost_badge = ""
+        # Boost badge + countdown (visible to all users → creates FOMO for businesses)
+        boost_line = ""
         if d.get("is_boosted"):
             hours_left = d.get("boost_hours_left", 0)
-            if hours_left > 1:
-                boost_badge = f" 🚀 BOOSTED ({int(hours_left)}h left)"
-            else:
-                boost_badge = " 🚀 BOOSTED"
+            countdown = f" — {int(hours_left)}h left" if hours_left > 1 else ""
+            boost_line = f"\n   🚀 *Boosted*{countdown}"
         lines.append(
-            f"*{i}. {freshness}{d['title']}*{featured}{boost_badge}\n"
-            f"   🏪 {d['business_name']}\n"
+            f"*{i}. {freshness}{d['title']}*{featured}\n"
+            f"   🏪 {d['business_name']}{boost_line}\n"
             f"   📝 {d['description']}\n"
             f"   📍 {d.get('city', '')}, {d.get('state', '')}"
             f"{expire_line}\n"
@@ -1384,14 +1382,14 @@ def boost_deal(wa_id: str, settings: Settings) -> str:
         }, settings)
 
         return (
-            f"🚀 Boost *{deal['title']}* to the top for 24 hours!\n\n"
-            "Your deal will:\n"
-            "• Appear *first* in search results\n"
-            "• Show a 🚀 *Boosted* badge\n"
-            "• Get included in the daily digest\n\n"
-            f"💳 *$4.99 one-time* — tap below to pay:\n"
-            f"{BOOST_PAYMENT_LINK}\n\n"
-            "Your boost activates instantly after payment. ⚡"
+            f"🚀 *Boost: {deal['title']}*\n\n"
+            "Get *3–5x more visibility* for just *$4.99*:\n\n"
+            "🔝 Appear at the *top* of every search instantly\n"
+            "🔥 Show a *🚀 Boosted* badge on your deal\n"
+            "📩 Featured in today's *daily digest*\n"
+            "⏳ Lasts *24 hours* — limited-time exposure\n\n"
+            f"👉 Tap to boost now:\n{BOOST_PAYMENT_LINK}\n\n"
+            "⚡ Activates *instantly* after payment."
         )
 
     except Exception as e:

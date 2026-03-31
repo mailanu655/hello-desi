@@ -701,10 +701,27 @@ def _notify_business_owners_aggregated(
             msg += " 👍\n"
 
             if not is_featured:
-                msg += (
-                    "\n📈 Featured businesses get *5x more visibility*\n"
-                    "👉 Reply *\"upgrade\"* to appear first — $15/month"
-                )
+                # Check if they have active deals to boost
+                has_deals = False
+                try:
+                    _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+                    deal_check = _client.table("deals").select("id", count="exact").eq("posted_by_wa_id", owner_wa_id).eq("is_active", True).limit(1).execute()
+                    has_deals = bool(deal_check.data)
+                except Exception:
+                    pass
+
+                if has_deals:
+                    msg += (
+                        "\n🚀 *Want to appear at the top right now?*\n"
+                        "Boost your deal for just *$4.99* (24 hours)\n"
+                        "👉 Reply *\"boost\"* to activate instantly\n"
+                        "\n_Or reply *\"upgrade\"* for $15/mo Featured plan_"
+                    )
+                else:
+                    msg += (
+                        "\n📈 Featured businesses get *5x more visibility*\n"
+                        "👉 Reply *\"upgrade\"* to appear first — $15/month"
+                    )
             else:
                 msg += "\n✅ Your Featured badge helped you appear first!"
 
