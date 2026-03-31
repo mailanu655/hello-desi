@@ -162,8 +162,9 @@ def detect_digest_intent(message: str) -> str | None:
 
 def detect_digest_reply(message: str) -> int | None:
     """
-    Detect if user is replying to a digest with a number (1, 2, 3).
+    Detect if user is replying to a digest with a number (1-5).
     Returns the deal index (1-based) or None.
+    Also detects "4" as the show-more pagination trigger.
     """
     msg = message.strip()
     if msg in ("1", "2", "3", "4", "5"):
@@ -176,6 +177,9 @@ def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str 
     Handle a numbered reply to the digest.
     Looks up the cached digest deals for this user and returns the deal details.
     Also tracks the click event for personalization.
+
+    Guards with a context token: if the digest was sent long ago and the token
+    has expired, we fall through to normal flow instead of showing stale data.
     """
     try:
         from app.services.session_store import _get_redis
@@ -183,14 +187,25 @@ def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str 
         if not r:
             return None
 
-        # Look up cached digest deals for this user
+        # ── Context token guard: only respond if digest is still "active" ──
+        token_key = f"digest_token:{wa_id}"
+        token = r.get(token_key)
+        if not token:
+            return None  # Token expired → digest is stale, fall through
+
+        # ── Look up cached digest deals for this user ──
         cache_key = f"digest_deals:{wa_id}"
         cached = r.get(cache_key)
         if not cached:
             return None  # No recent digest — let normal flow handle it
 
         deals = json.loads(cached)
-        if deal_index < 1 or deal_index > len(deals):
+
+        # ── Show-more pagination (reply "4") ──
+        if deal_index == 4:
+            return _handle_show_more(wa_id, deals, settings, r)
+
+        if deal_index < 1 or deal_index > min(len(deals), 3):
             return None
 
         deal = deals[deal_index - 1]
@@ -209,6 +224,7 @@ def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str 
         desc = deal.get("description", "")
         city = deal.get("city", "")
         state = deal.get("state", "")
+        phone = deal.get("phone", "")
 
         expire_str = ""
         if deal.get("expires_at"):
@@ -231,6 +247,11 @@ def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str 
         if city:
             msg += f"📍 {city}, {state}\n"
         msg += expire_str
+
+        # ── Call now action (phone number from business) ──
+        if phone:
+            msg += f"\n📞 *Call now:* {phone}"
+
         msg += (
             "\n\n👉 Say *\"browse deals\"* to see all deals\n"
             "👉 Say *\"boost\"* to promote your own deal"
@@ -241,6 +262,50 @@ def handle_digest_reply(wa_id: str, deal_index: int, settings: Settings) -> str 
     except Exception as e:
         logger.warning(f"Digest reply handling failed for {wa_id}: {e}")
         return None
+
+
+def _handle_show_more(wa_id: str, deals: list[dict], settings: Settings, r) -> str:
+    """
+    Handle 'show more' pagination when user replies "4" to a digest.
+    Shows deals 4-6 from the cached list.
+    """
+    # Track current offset (starts at 3 since digest shows 1-3)
+    offset_key = f"digest_offset:{wa_id}"
+    raw_offset = r.get(offset_key)
+    offset = int(raw_offset) if raw_offset else 3
+
+    page = deals[offset:offset + 3]
+
+    if not page:
+        return (
+            "That's all the deals for now! 🎉\n\n"
+            "👉 Say *\"browse deals\"* for the full marketplace\n"
+            "👉 Or check back tomorrow for new deals"
+        )
+
+    # Build compact page
+    msg = "📋 *More deals:*\n\n"
+    for i, d in enumerate(page, offset + 1):
+        biz_name = d.get("business_name", "Local Business")
+        title = d.get("title", "")
+        badge = ""
+        if d.get("is_boosted"):
+            badge = " 🚀"
+        msg += f"*{i}.* {title} @ {biz_name}{badge}\n"
+
+    # Update offset for next "show more"
+    new_offset = offset + 3
+    r.setex(offset_key, 600, str(new_offset))  # 10min TTL
+
+    if new_offset < len(deals):
+        msg += "\n👉 Reply *4* for even more deals"
+    else:
+        msg += "\n✅ That's all current deals!"
+
+    msg += "\n👉 Say *\"browse deals\"* for the full marketplace"
+
+    _track_digest_event("digest_show_more", wa_id, {"offset": offset}, settings)
+    return msg
 
 
 # ── Digest Content Builder ────────────────────────────────────────
@@ -463,13 +528,30 @@ def build_digest_message(
     """
     Build the daily digest message for a city.
     Returns (message_text, deals_list) — deals_list is cached for reply handling.
+
+    v2.1 tweaks:
+    - Freshness timestamp line at top
+    - Boosted slots capped at 2
+    - "Show more" CTA (reply 4)
+    - Fetches more deals (10) so pagination has content
     """
     now = datetime.now(timezone.utc)
+    # EST for user-facing timestamp
+    est_offset = timedelta(hours=-5)
+    est_now = now + est_offset
 
     new_biz = _get_new_businesses(city, settings)
-    deals = _get_active_deals(city, settings, limit=5)
+    deals = _get_active_deals(city, settings, limit=10)  # Fetch more for pagination
     featured = _get_featured_businesses(city, settings)
     total_count = _get_total_business_count(city, settings)
+
+    # ── Cap boosted slots at 2 (Tweak 4) ──
+    boosted_count = 0
+    for d in deals:
+        if d.get("is_boosted"):
+            boosted_count += 1
+            if boosted_count > 2:
+                d["is_boosted"] = False  # Demote to normal ranking
 
     # Personalize deal order if we know the user
     if wa_id:
@@ -477,10 +559,14 @@ def build_digest_message(
         if pref:
             deals = _personalize_deals(deals, pref)
 
-    # ── Header — action-driven ──
-    msg = f"🔥 *Top deals in {city} TODAY*\n\n"
+    # ── Freshness line (Tweak 5) ──
+    time_str = est_now.strftime("%-I:%M %p")
+    msg = f"📍 *{city}* • Updated today at {time_str}\n\n"
 
-    # ── Deals — numbered with quick reply ──
+    # ── Header — action-driven ──
+    msg += f"🔥 *Top deals in {city} TODAY*\n\n"
+
+    # ── Deals — numbered with quick reply (show top 3) ──
     if deals:
         for i, d in enumerate(deals[:3], 1):
             biz_name = d.get("business_name", "Local Business")
@@ -507,7 +593,7 @@ def build_digest_message(
                 except Exception:
                     pass
 
-            # Freshness
+            # Freshness badge for new deals
             freshness = ""
             if d.get("created_at"):
                 try:
@@ -522,6 +608,10 @@ def build_digest_message(
                 f"{urgency}\n"
                 f"   👉 Reply *\"{i}\"* for details\n\n"
             )
+
+        # ── Show more CTA (Tweak 2) — only if more deals exist ──
+        if len(deals) > 3:
+            msg += "👉 Reply *\"4\"* to see more deals\n\n"
     else:
         msg += "No new deals today — check back tomorrow!\n\n"
 
@@ -593,6 +683,27 @@ def build_expiring_deals_message(city: str, settings: Settings) -> str | None:
         return None
 
 
+# ── Business Phone Lookup ──────────────────────────────────────────
+
+def _get_business_phones(business_ids: list[str], settings: Settings) -> dict[str, str]:
+    """Batch-fetch phone numbers for a list of business IDs."""
+    if not business_ids:
+        return {}
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        unique_ids = list(set(business_ids))
+        result = (
+            client.table("businesses")
+            .select("id, phone")
+            .in_("id", unique_ids)
+            .execute()
+        )
+        return {b["id"]: b.get("phone", "") for b in (result.data or []) if b.get("phone")}
+    except Exception as e:
+        logger.warning(f"Failed to fetch business phones: {e}")
+        return {}
+
+
 # ── Tracking ─────────────────────────────────────────────────────
 
 def _track_digest_event(
@@ -662,6 +773,11 @@ async def send_daily_digest(settings: Settings) -> dict:
             # Cache deal list in Redis so reply handler can look them up
             if r and deals:
                 try:
+                    # Look up phone numbers for each deal's business
+                    biz_phones = _get_business_phones(
+                        [d.get("business_id") for d in deals if d.get("business_id")],
+                        settings,
+                    )
                     cache_data = json.dumps([{
                         "title": d.get("title", ""),
                         "description": d.get("description", ""),
@@ -670,8 +786,14 @@ async def send_daily_digest(settings: Settings) -> dict:
                         "city": d.get("city", ""),
                         "state": d.get("state", ""),
                         "expires_at": d.get("expires_at", ""),
+                        "is_boosted": d.get("is_boosted", False),
+                        "phone": biz_phones.get(d.get("business_id", ""), ""),
                     } for d in deals])
                     r.setex(f"digest_deals:{wa_id}", 86400, cache_data)  # 24h TTL
+
+                    # Set context token (12h TTL) — guards numbered replies
+                    import secrets
+                    r.setex(f"digest_token:{wa_id}", 43200, secrets.token_hex(4))
                 except Exception:
                     pass
 
