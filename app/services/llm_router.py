@@ -415,6 +415,11 @@ async def _finalize_cheap_response(
         await _save_history(wa_id, message, formatted, settings)
     await _cache_response(message, name, formatted, settings)
 
+    # Track token usage (approximate: 1 token ≈ 4 chars)
+    from app.services.session_store import track_token_usage
+    approx_tokens = (len(message) + len(formatted)) // 4
+    track_token_usage(wa_id, approx_tokens, settings)
+
     return formatted
 
 
@@ -457,6 +462,23 @@ async def generate_response(
     # ── 3. Classify query ───────────────────────────────────────
     tier = classify_query(message)
     fallback_used = False
+
+    # ── 3a. Token-based cost guard ─────────────────────────────
+    # Heavy users (>20k tokens today) get downgraded to cheap tier
+    # to prevent cost blowouts. Premium subscribers are exempt.
+    from app.services.session_store import get_tokens_today, get_user_daily_limit
+    tokens_today = get_tokens_today(wa_id, settings)
+    TOKEN_BUDGET_DAILY = 20_000
+
+    if tokens_today > TOKEN_BUDGET_DAILY and tier != "cheap":
+        user_limit = get_user_daily_limit(wa_id, settings)
+        if user_limit < 200:  # Not a premium subscriber
+            logger.info(
+                f"Token guard: {wa_id} at {tokens_today} tokens today, "
+                f"downgrading from '{tier}' to 'cheap'"
+            )
+            tier = "cheap"
+
     logger.info(f"Router classified query from {wa_id} as '{tier}': {message[:50]}...")
 
     # ── 4. Try cheap tier (Gemini direct → OpenRouter → retry once) ──
@@ -554,5 +576,10 @@ async def generate_response(
         f"resp_len={len(response)} | "
         f"time={elapsed:.2f}s"
     )
+
+    # Track token usage for mid/premium (approximate: 1 token ≈ 4 chars)
+    from app.services.session_store import track_token_usage
+    approx_tokens = (len(message) + len(response)) // 4
+    track_token_usage(wa_id, approx_tokens, settings)
 
     return response

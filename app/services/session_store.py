@@ -251,6 +251,34 @@ def check_burst_limit(wa_id: str, settings: Settings, per_minute: int = 10) -> b
         return True  # No Redis = no burst limit
 
 
+def get_burst_count(wa_id: str, settings: Settings) -> int:
+    """Get current burst count for soft throttle warning."""
+    key = f"burst:{wa_id}"
+    r = _get_redis(settings)
+    if r:
+        try:
+            count = r.get(key)
+            return int(count) if count else 0
+        except Exception:
+            return 0
+    return 0
+
+
+def get_tokens_today(wa_id: str, settings: Settings) -> int:
+    """Get total LLM tokens used by this user today."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"tokens:{wa_id}:{today}"
+    r = _get_redis(settings)
+    if r:
+        try:
+            count = r.get(key)
+            return int(count) if count else 0
+        except Exception:
+            return 0
+    return 0
+
+
 def get_daily_message_count(wa_id: str, settings: Settings) -> int:
     """
     Get current daily message count for grace warning logic.

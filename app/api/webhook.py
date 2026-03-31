@@ -32,6 +32,7 @@ from app.services.session_store import (
     release_user_lock,
     check_rate_limit_atomic,
     check_burst_limit,
+    get_burst_count,
     get_daily_message_count,
     get_user_daily_limit,
     track_token_usage,
@@ -227,13 +228,22 @@ async def _process_message(
             )
             return
 
-        # ── 4e-i. Burst limiter (10 msg/min) ──────────────────────
+        # ── 4e-i. Burst limiter (10 msg/min) + soft throttle ──────
+        burst_count = get_burst_count(wa_id, settings)
+        if burst_count == 8:
+            # Soft throttle warning — let the message through but warn
+            await _wa().send_text_message(
+                wa_id,
+                "⚠️ You're sending messages quickly — "
+                "responses may slow down if you continue."
+            )
+
         if not check_burst_limit(wa_id, settings, per_minute=10):
             logger.info(f"[{request_id}] Burst limited {wa_id}")
             await _wa().send_text_message(
                 wa_id,
                 "You're sending messages too quickly 😅\n"
-                "Please wait a few seconds and try again."
+                "⏳ Please wait ~30 seconds before sending more messages."
             )
             return
 

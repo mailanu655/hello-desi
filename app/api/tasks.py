@@ -274,6 +274,14 @@ async def get_analytics(
     # Stripe dead letters (needs attention)
     dead_letters = client.table("stripe_events").select("id", count="exact").eq("status", "dead_letter").execute()
 
+    # Rate limit and proof message funnel counters
+    rate_limited = client.table("notification_log").select("id", count="exact").eq("status", "proof_event").ilike("details", "%rate_limit%").execute()
+    burst_limited = client.table("notification_log").select("id", count="exact").eq("status", "proof_event").ilike("details", "%burst_limit%").execute()
+    proof_sent = client.table("notification_log").select("id", count="exact").eq("status", "proof_event").ilike("details", "%weekly_report_sent%").execute()
+    proof_actions = client.table("notification_log").select("id", count="exact").eq("status", "proof_event").ilike("details", "%weekly_report_action%").execute()
+    digest_sent = client.table("notification_log").select("id", count="exact").eq("status", "digest_event").ilike("details", "%digest_sent%").execute()
+    digest_clicks = client.table("notification_log").select("id", count="exact").eq("status", "digest_event").ilike("details", "%digest_click%").execute()
+
     return {
         "status": "ok",
         "timestamp": now.isoformat(),
@@ -298,4 +306,12 @@ async def get_analytics(
             "activated": boost_activated.count or 0,
         },
         "stripe_dead_letters": dead_letters.count or 0,
+        "proof_funnel": {
+            "sent": proof_sent.count or 0,
+            "actions": proof_actions.count or 0,
+        },
+        "digest_funnel": {
+            "sent": digest_sent.count or 0,
+            "clicks": digest_clicks.count or 0,
+        },
     }
