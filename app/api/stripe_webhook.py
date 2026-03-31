@@ -265,6 +265,11 @@ async def _handle_checkout_completed(session: dict, event_id: str, settings):
         )
         return
 
+    # ── Deal Boost (one-time $4.99) ─────────────────────────────
+    if plan == "deal_boost":
+        await _handle_deal_boost_payment(session, event_id, customer_email, settings)
+        return
+
     client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
     # Try to find and activate an existing subscription
@@ -512,6 +517,130 @@ async def _handle_payment_failed(invoice: dict, event_id: str, settings):
 
 
 # ══════════════════════════════════════════════════════════════════
+# Deal Boost handler
+# ══════════════════════════════════════════════════════════════════
+
+async def _handle_deal_boost_payment(session: dict, event_id: str, customer_email: str, settings):
+    """
+    Handle a $4.99 deal boost payment.
+
+    Strategy to find the buyer's wa_id:
+    1. Check checkout session metadata for wa_id (if we set it)
+    2. Match by customer_email → businesses → wa_id
+    3. Check Redis pending_boost keys for recent requests
+
+    Once wa_id is found, call activate_boost_for_deal() to mark the deal.
+    """
+    from supabase import create_client
+    from app.services.deals_service import activate_boost_for_deal
+
+    wa_id = None
+
+    # Strategy 1: metadata (future-proof — we can add metadata to payment links)
+    metadata = session.get("metadata") or {}
+    if metadata.get("wa_id"):
+        wa_id = metadata["wa_id"]
+        logger.info(f"Deal boost: found wa_id from metadata: {wa_id}")
+
+    # Strategy 2: match by email → business → wa_id
+    if not wa_id and customer_email:
+        try:
+            client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+            biz_result = (
+                client.table("businesses")
+                .select("source_id")
+                .eq("email", customer_email)
+                .limit(1)
+                .execute()
+            )
+            if biz_result.data:
+                source_id = biz_result.data[0].get("source_id", "")
+                # source_id format: "user_{wa_id}_..."
+                if source_id.startswith("user_"):
+                    parts = source_id.split("_", 2)
+                    if len(parts) >= 2:
+                        wa_id = parts[1]
+                        logger.info(f"Deal boost: matched wa_id from email: {wa_id}")
+        except Exception as e:
+            logger.warning(f"Deal boost email lookup failed: {e}")
+
+    # Strategy 3: scan Redis for recent pending_boost keys
+    if not wa_id:
+        try:
+            from app.services.session_store import _get_redis
+            r = _get_redis(settings)
+            if r:
+                keys = r.keys("pending_boost:*")
+                if keys and len(keys) == 1:
+                    # Only one pending boost — safe to assume it's this payment
+                    wa_id = keys[0].split(":", 1)[1] if isinstance(keys[0], str) else keys[0].decode().split(":", 1)[1]
+                    logger.info(f"Deal boost: matched wa_id from single pending_boost key: {wa_id}")
+                elif keys and len(keys) > 1:
+                    logger.warning(f"Deal boost: {len(keys)} pending_boost keys — can't auto-match")
+        except Exception as e:
+            logger.warning(f"Deal boost Redis scan failed: {e}")
+
+    if not wa_id:
+        logger.warning(
+            f"Deal boost payment received but can't identify buyer. "
+            f"email={customer_email}, session={session.get('id')}"
+        )
+        await _log_stripe_event(
+            event_id, "checkout.session.completed", settings,
+            customer_email=customer_email,
+            plan="deal_boost",
+            amount_cents=499,
+            raw_data={"session_id": session.get("id"), "status": "unmatched_boost"},
+            status="unmatched",
+        )
+        await _send_admin_alert(
+            f"💰 *Unmatched deal boost payment*\n\n"
+            f"Email: {customer_email}\n"
+            f"Session: `{session.get('id')}`\n\n"
+            f"Could not identify the buyer's WhatsApp ID.",
+            settings,
+        )
+        return
+
+    # Activate the boost
+    success = activate_boost_for_deal(wa_id, settings)
+
+    await _log_stripe_event(
+        event_id, "checkout.session.completed", settings,
+        customer_email=customer_email,
+        plan="deal_boost",
+        amount_cents=499,
+        raw_data={
+            "session_id": session.get("id"),
+            "wa_id": wa_id,
+            "activated": success,
+        },
+        status="success" if success else "activation_failed",
+    )
+
+    # Send confirmation via WhatsApp
+    if success:
+        from app.services.whatsapp_service import WhatsAppService
+        whatsapp = WhatsAppService(settings)
+        await whatsapp.send_text_message(
+            wa_id,
+            "🚀 *Boost activated!*\n\n"
+            "Your deal is now at the *top of search results* for 24 hours.\n"
+            "⏰ Boost expires tomorrow at this time.\n\n"
+            "Thanks for supporting Hello Desi! 🙏"
+        )
+        logger.info(f"Deal boost activated and confirmed for {wa_id}")
+    else:
+        logger.error(f"Deal boost activation failed for {wa_id} after payment")
+        await _send_admin_alert(
+            f"⚠️ *Deal boost activation failed after payment*\n\n"
+            f"wa_id: {wa_id}\nEmail: {customer_email}\n"
+            f"Payment was successful but boost could not be applied.",
+            settings,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
 # Helpers
 # ══════════════════════════════════════════════════════════════════
 
@@ -553,7 +682,9 @@ async def _send_activation_confirmation(wa_id: str, plan: str, biz_name: str, se
 
 def _amount_to_plan(amount_cents: int) -> str | None:
     """Map Stripe amount (in cents) to our plan name."""
-    if amount_cents == 1500:
+    if amount_cents == 499:
+        return "deal_boost"  # One-time deal boost ($4.99)
+    elif amount_cents == 1500:
         return "featured"
     elif amount_cents == 3000:
         return "premium"

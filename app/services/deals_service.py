@@ -22,6 +22,7 @@ Uses Redis-backed session store (survives container restarts).
 """
 
 import json
+import json
 import logging
 import re
 import time
@@ -1243,11 +1244,17 @@ def detect_boost_intent(message: str) -> bool:
     return msg in ("boost", "boost deal", "boost my deal")
 
 
+# ── Stripe boost config ───────────────────────────────────────
+BOOST_PAYMENT_LINK = "https://buy.stripe.com/14AbJ0dJD2ymcmsaICdjO02"
+BOOST_PRICE_ID = "price_1TGpqbCytUHyGW3SY56Trvau"
+BOOST_DURATION_HOURS = 24
+
+
 def boost_deal(wa_id: str, settings: Settings) -> str:
     """
-    Mark the user's most recent deal as boosted for 24 hours.
-    In production, this would integrate with Stripe payment link first.
-    For now, marks the deal and returns a payment CTA.
+    Show the user their deal info + Stripe payment link.
+    The actual boost is activated by `activate_boost_for_deal` once
+    Stripe confirms payment via the checkout.session.completed webhook.
     """
     try:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
@@ -1286,33 +1293,102 @@ def boost_deal(wa_id: str, settings: Settings) -> str:
             except Exception:
                 pass
 
-        # Mark as boosted (24 hours)
-        boost_until = (now + timedelta(hours=24)).isoformat()
-        client.table("deals").update({
-            "boosted_until": boost_until,
-        }).eq("id", deal["id"]).execute()
+        # Store pending boost in Redis so webhook knows which deal to activate
+        try:
+            from app.services.session_store import _get_redis
+            r = _get_redis(settings)
+            if r:
+                r.setex(
+                    f"pending_boost:{wa_id}",
+                    3600,  # 1 hour to complete payment
+                    json.dumps({"deal_id": deal["id"], "city": deal.get("city", "")}),
+                )
+        except Exception as redis_err:
+            logger.warning(f"Redis pending_boost set failed: {redis_err}")
 
-        # Bust cache so boosted deal shows up immediately
-        _invalidate_deal_cache(deal.get("city"), settings)
-
-        _log_deal_event("deal_boosted", wa_id, {
+        _log_deal_event("boost_initiated", wa_id, {
             "deal_id": deal["id"],
             "deal_title": deal["title"],
-            "business_name": deal["business_name"],
-            "boost_until": boost_until,
         }, settings)
 
         return (
-            f"🚀 *{deal['title']}* is now boosted for 24 hours!\n\n"
-            "Your deal will appear at the top of search results "
-            "and in the daily digest.\n\n"
-            "⏰ Boost expires tomorrow at this time.\n\n"
-            "💳 *$5 boost fee* — payment link coming to your WhatsApp shortly."
+            f"🚀 Boost *{deal['title']}* to the top for 24 hours!\n\n"
+            "Your deal will:\n"
+            "• Appear *first* in search results\n"
+            "• Show a 🚀 *Boosted* badge\n"
+            "• Get included in the daily digest\n\n"
+            f"💳 *$4.99 one-time* — tap below to pay:\n"
+            f"{BOOST_PAYMENT_LINK}\n\n"
+            "Your boost activates instantly after payment. ⚡"
         )
 
     except Exception as e:
         logger.error(f"Deal boost failed for {wa_id}: {e}")
         return "Sorry, something went wrong. Please try again. 🙏"
+
+
+def activate_boost_for_deal(wa_id: str, settings: Settings) -> bool:
+    """
+    Called by Stripe webhook after successful payment.
+    Reads the pending boost from Redis and activates it.
+    Returns True if boost was activated successfully.
+    """
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+
+        # Look up which deal to boost
+        pending_key = f"pending_boost:{wa_id}"
+        pending_raw = r.get(pending_key) if r else None
+
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        now = datetime.now(timezone.utc)
+        boost_until = (now + timedelta(hours=BOOST_DURATION_HOURS)).isoformat()
+
+        if pending_raw:
+            pending = json.loads(pending_raw)
+            deal_id = pending["deal_id"]
+            city = pending.get("city", "")
+            if r:
+                r.delete(pending_key)
+        else:
+            # Fallback: boost their most recent active deal
+            logger.warning(f"No pending_boost in Redis for {wa_id}, falling back to latest deal")
+            result = (
+                client.table("deals")
+                .select("id, city")
+                .eq("posted_by_wa_id", wa_id)
+                .eq("is_active", True)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                logger.error(f"activate_boost: no active deals for {wa_id}")
+                return False
+            deal_id = result.data[0]["id"]
+            city = result.data[0].get("city", "")
+
+        # Activate the boost
+        client.table("deals").update({
+            "boosted_until": boost_until,
+        }).eq("id", deal_id).execute()
+
+        # Bust cache
+        _invalidate_deal_cache(city or None, settings)
+
+        _log_deal_event("deal_boosted", wa_id, {
+            "deal_id": deal_id,
+            "boost_until": boost_until,
+            "payment": "stripe",
+        }, settings)
+
+        logger.info(f"Boost activated for deal {deal_id} by {wa_id} until {boost_until}")
+        return True
+
+    except Exception as e:
+        logger.error(f"activate_boost failed for {wa_id}: {e}")
+        return False
 
 
 # ── Pagination state helpers ──────────────────────────────────
