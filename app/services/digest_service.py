@@ -579,15 +579,17 @@ def build_digest_message(
             elif d.get("is_featured_business"):
                 badge = " ⭐ Featured"
 
-            # Urgency
+            # Urgency — granular countdown for high click-through
             urgency = ""
             if d.get("expires_at"):
                 try:
                     exp = datetime.fromisoformat(d["expires_at"].replace("Z", "+00:00"))
                     days_left = (exp - now).days
                     hours_left = (exp - now).total_seconds() / 3600
-                    if hours_left <= 24:
-                        urgency = "\n   ⏰ *Ends today!*"
+                    if hours_left <= 6:
+                        urgency = "\n   ⏳ *Last few hours!*"
+                    elif hours_left <= 24:
+                        urgency = f"\n   ⏰ *Ends today — {int(hours_left)}h left*"
                     elif days_left <= 2:
                         urgency = "\n   ⏰ Ends soon"
                 except Exception:
@@ -613,7 +615,11 @@ def build_digest_message(
         if len(deals) > 3:
             msg += "👉 Reply *\"4\"* to see more deals\n\n"
     else:
-        msg += "No new deals today — check back tomorrow!\n\n"
+        msg += (
+            "No active deals today 🙏\n\n"
+            "Want to be the first?\n"
+            "👉 Reply *\"post deal\"* to promote your business 🚀\n\n"
+        )
 
     # ── New Businesses (compact) ──
     if new_biz:
