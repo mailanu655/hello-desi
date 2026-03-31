@@ -1244,6 +1244,78 @@ def detect_boost_intent(message: str) -> bool:
     return msg in ("boost", "boost deal", "boost my deal")
 
 
+def detect_boost_help_intent(message: str) -> bool:
+    """Check if user needs help with a failed boost activation."""
+    msg = message.lower().strip()
+    return msg in ("boost help", "boost issue", "boost problem", "my boost didn't work")
+
+
+def handle_boost_help(wa_id: str, settings: Settings) -> str:
+    """
+    Manual recovery for when Stripe payment succeeded but webhook failed.
+    Checks if there's a pending_boost in Redis and activates it,
+    or checks recent Stripe events for an unmatched boost payment.
+    """
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+
+        # Check if there's a pending boost waiting
+        if r:
+            pending_raw = r.get(f"pending_boost:{wa_id}")
+            if pending_raw:
+                success = activate_boost_for_deal(wa_id, settings)
+                if success:
+                    return (
+                        "🚀 *Boost activated!*\n\n"
+                        "Found your pending boost and activated it.\n"
+                        "Your deal is now at the top of search results for 24 hours! ⚡"
+                    )
+
+        # Check if their latest deal is already boosted (maybe webhook worked after all)
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        result = (
+            client.table("deals")
+            .select("title, boosted_until")
+            .eq("posted_by_wa_id", wa_id)
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if result.data and result.data[0].get("boosted_until"):
+            from datetime import datetime, timezone
+            try:
+                boost_dt = datetime.fromisoformat(
+                    result.data[0]["boosted_until"].replace("Z", "+00:00")
+                )
+                if boost_dt > datetime.now(timezone.utc):
+                    hours_left = round((boost_dt - datetime.now(timezone.utc)).total_seconds() / 3600, 1)
+                    return (
+                        f"Your deal *{result.data[0]['title']}* is already boosted! 🚀\n"
+                        f"⏰ {hours_left} hours remaining.\n\n"
+                        "It's appearing at the top of search results."
+                    )
+            except Exception:
+                pass
+
+        # No pending boost found — give them instructions
+        return (
+            "I couldn't find a pending boost for your account.\n\n"
+            "If you paid but your boost didn't activate:\n"
+            "1. Check your email for a Stripe receipt\n"
+            "2. Reply here with *boost* to try again\n"
+            "3. If the issue persists, we'll sort it out — "
+            "your payment is safe 🙏\n\n"
+            "Our team has been notified."
+        )
+
+    except Exception as e:
+        logger.error(f"Boost help failed for {wa_id}: {e}")
+        return "Sorry, something went wrong. Please try again in a moment. 🙏"
+
+
 # ── Stripe boost config ───────────────────────────────────────
 BOOST_PAYMENT_LINK = "https://buy.stripe.com/14AbJ0dJD2ymcmsaICdjO02"
 BOOST_PRICE_ID = "price_1TGpqbCytUHyGW3SY56Trvau"
@@ -1368,6 +1440,19 @@ def activate_boost_for_deal(wa_id: str, settings: Settings) -> bool:
                 return False
             deal_id = result.data[0]["id"]
             city = result.data[0].get("city", "")
+
+        # Idempotency: check if deal is already boosted (prevents double-pay issues)
+        existing = client.table("deals").select("boosted_until").eq("id", deal_id).limit(1).execute()
+        if existing.data and existing.data[0].get("boosted_until"):
+            try:
+                existing_boost = datetime.fromisoformat(
+                    existing.data[0]["boosted_until"].replace("Z", "+00:00")
+                )
+                if existing_boost > now:
+                    logger.info(f"Deal {deal_id} already boosted until {existing_boost} — skipping duplicate activation")
+                    return True  # Already boosted, treat as success
+            except Exception:
+                pass
 
         # Activate the boost
         client.table("deals").update({

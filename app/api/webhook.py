@@ -275,8 +275,10 @@ async def _process_message(
             detect_more_deals_intent,
             detect_delete_deal_intent,
             detect_boost_intent,
+            detect_boost_help_intent,
             delete_deal,
             boost_deal,
+            handle_boost_help,
             has_active_deal_session,
             handle_deal_message,
             start_deal_flow,
@@ -382,6 +384,13 @@ async def _process_message(
         if detect_boost_intent(message_body):
             logger.info(f"[{request_id}] Boost deal request from {wa_id}")
             response_text = boost_deal(wa_id, settings)
+            await _wa().send_text_message(wa_id, response_text)
+            return
+
+        # Boost help (manual recovery if webhook failed)
+        if detect_boost_help_intent(message_body):
+            logger.info(f"[{request_id}] Boost help request from {wa_id}")
+            response_text = handle_boost_help(wa_id, settings)
             await _wa().send_text_message(wa_id, response_text)
             return
 
