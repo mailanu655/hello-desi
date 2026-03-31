@@ -96,6 +96,22 @@ async def expire_deals(
     return {"status": "ok", "summary": summary, "orphan_cleanup": orphan_summary}
 
 
+@router.post("/tasks/nudge-inactive", dependencies=[Depends(verify_cron_secret)])
+async def nudge_inactive_businesses(
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Nudge business owners who haven't posted deals in 7+ days.
+    Called by cron weekly on Wednesday at 11am EST.
+    """
+    from app.services.monetization_service import nudge_inactive_businesses
+
+    logger.info("Starting inactive business nudge run...")
+    summary = await nudge_inactive_businesses(settings)
+    logger.info(f"Inactive nudge run complete: {summary}")
+    return {"status": "ok", "summary": summary}
+
+
 @router.get("/tasks/analytics", dependencies=[Depends(verify_cron_secret)])
 async def get_analytics(
     settings: Settings = Depends(get_settings),
