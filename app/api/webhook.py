@@ -349,6 +349,9 @@ async def _process_message(
         deal_intent = detect_deal_intent(message_body)
         if deal_intent == "post":
             logger.info(f"[{request_id}] Starting post-deal flow for {wa_id}")
+            # Attribution: was this triggered by a proof message?
+            from app.services.proof_message_service import track_proof_action
+            track_proof_action(wa_id, "post_deal", settings)
             response_text = start_deal_flow(wa_id, settings)
             await _wa().send_text_message(wa_id, response_text)
             return
@@ -383,6 +386,8 @@ async def _process_message(
         # Boost deal
         if detect_boost_intent(message_body):
             logger.info(f"[{request_id}] Boost deal request from {wa_id}")
+            from app.services.proof_message_service import track_proof_action
+            track_proof_action(wa_id, "boost", settings)
             response_text = boost_deal(wa_id, settings)
             await _wa().send_text_message(wa_id, response_text)
             return
@@ -482,6 +487,8 @@ async def _process_message(
         money_intent = detect_monetization_intent(message_body)
         if money_intent == "upgrade":
             logger.info(f"[{request_id}] Starting upgrade flow for {wa_id}")
+            from app.services.proof_message_service import track_proof_action
+            track_proof_action(wa_id, "upgrade", settings)
             response_text = start_upgrade_flow(wa_id, settings)
             await _wa().send_text_message(wa_id, response_text)
             return

@@ -183,6 +183,77 @@ def _track_proof_event(
         logger.warning(f"Proof event tracking failed: {e}")
 
 
+def mark_proof_sent(wa_id: str, settings: Settings) -> None:
+    """Set a Redis marker so we can attribute post-proof actions."""
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if r:
+            # Marker lasts 4 hours — if user acts within 4h, it's attributed
+            r.setex(f"proof_sent:{wa_id}", 14400, "1")
+    except Exception:
+        pass
+
+
+def track_proof_action(wa_id: str, action: str, settings: Settings) -> None:
+    """
+    Check if user recently received a proof message and log the attribution.
+    Called from webhook when user does 'post deal', 'boost', or 'upgrade'.
+    """
+    try:
+        from app.services.session_store import _get_redis
+        r = _get_redis(settings)
+        if not r:
+            return
+        if r.get(f"proof_sent:{wa_id}"):
+            _track_proof_event("weekly_report_action", wa_id, {
+                "action": action,
+            }, settings)
+            logger.info(f"Proof-attributed action: {wa_id} → {action}")
+    except Exception:
+        pass
+
+
+# ── Category-Specific CTAs ──────────────────────────────────────
+
+CATEGORY_CTAS: dict[str, str] = {
+    "restaurant": "Add a lunch or dinner deal today 🍛",
+    "grocery": "Run a weekend discount on groceries 🛒",
+    "salon": "Offer a first-visit discount 💇",
+    "beauty": "Promote a beauty package deal 💅",
+    "temple": "Share upcoming events with the community 🙏",
+    "legal": "Offer a free initial consultation 📋",
+    "tax": "Promote seasonal tax prep specials 📊",
+    "real estate": "List an open house or rental deal 🏠",
+    "tutoring": "Offer a free trial session 📚",
+    "childcare": "Share availability for new families 👶",
+    "doctor": "Promote new patient specials 🏥",
+    "insurance": "Offer a free policy review 🛡️",
+    "auto": "Run a service discount special 🚗",
+    "it": "Advertise a free consultation 💻",
+}
+
+
+def _get_category_cta(category: str) -> str:
+    """Get a category-specific call-to-action, or a generic one."""
+    if not category:
+        return "Post a deal to attract new customers"
+    cat_lower = category.lower()
+    for key, cta in CATEGORY_CTAS.items():
+        if key in cat_lower:
+            return cta
+    return "Post a deal to attract new customers"
+
+
+def _shortcut_footer() -> str:
+    """1-tap shortcut menu appended to every proof message."""
+    return (
+        "\n\n─────────────\n"
+        "⚡ *Quick actions:*\n"
+        "Reply *post deal* · *boost* · *my stats*"
+    )
+
+
 # ── Message Builder ─────────────────────────────────────────────
 
 def build_proof_message(
@@ -195,18 +266,21 @@ def build_proof_message(
     """
     Build the weekly proof WhatsApp message for a business owner.
 
-    v2 — conversion-optimized with urgency framing, benchmarks,
-    trend percentages, and action tie-ins.
+    v2.1 — conversion-optimized with urgency framing, benchmarks,
+    trend percentages, category-specific CTAs, missed-opportunity
+    framing, and 1-tap shortcut footer.
 
     Variants:
     🟢 ACTIVE  — has inquiries this week
     🟡 QUIET   — zero this week, had some before
     🔵 NEW     — brand new listing (< 14 days)
+    ⚪ DORMANT — established, zero activity
     """
     name = business.get("name", "your business")
     is_featured = business.get("is_featured", False)
     city = business.get("city", "")
     category = business.get("category", "")
+    cat_cta = _get_category_cta(category)
 
     # Check if new (< 14 days old)
     is_new = False
@@ -240,6 +314,12 @@ def build_proof_message(
             f"{trend}\n"
         )
 
+        # Missed opportunity framing — make loss tangible
+        msg += (
+            f"\nThat's *{this_week} potential customers* "
+            "who were looking for exactly what you offer.\n"
+        )
+
         # Benchmark comparison
         if benchmark > this_week:
             msg += (
@@ -250,9 +330,9 @@ def build_proof_message(
         # Deal tie-in — critical conversion moment
         if active_deals == 0:
             msg += (
-                "\n⚠️ *You have 0 active deals*\n"
-                "You're getting searches but missing conversions.\n"
-                "👉 Reply *\"post deal\"* to capture this demand 🚀\n"
+                f"\n⚠️ *You have 0 active deals — you're missing conversions*\n"
+                f"👉 {cat_cta}\n"
+                "👉 Reply *\"post deal\"* to get started 🚀\n"
             )
         else:
             msg += (
@@ -275,6 +355,7 @@ def build_proof_message(
             "👉 Reply *\"boost\"*"
         )
 
+        msg += _shortcut_footer()
         return msg
 
     # ── 🟡 QUIET: zero this week, had activity before ───────────
@@ -290,15 +371,16 @@ def build_proof_message(
             msg += (
                 f"\n📊 Similar {category or 'businesses'} in {city or 'your area'} "
                 f"are getting *{benchmark}* searches\n"
-                "\nYou may not be visible enough.\n"
+                "\nCustomers are looking — they're just not finding you.\n"
             )
         else:
             msg += "\nSearches come in waves — let's get you back on top.\n"
 
-        # Action tie-in
+        # Category-specific action tie-in
         if active_deals == 0:
             msg += (
-                "\n👉 Reply *\"post deal\"* — deals attract 2x more views\n"
+                f"\n💡 *Tip:* {cat_cta}\n"
+                "👉 Reply *\"post deal\"* — deals attract 2x more views\n"
             )
 
         if not is_featured:
@@ -310,6 +392,7 @@ def build_proof_message(
             "\n🚀 Or reply *\"boost\"* for instant top placement ($4.99)\n"
         )
 
+        msg += _shortcut_footer()
         return msg
 
     # ── 🔵 NEW LISTING (< 14 days, zero activity) ──────────────
@@ -331,12 +414,13 @@ def build_proof_message(
 
         msg += (
             "⏳ Customers are already searching in your area.\n\n"
-            "Quick wins to get found:\n"
+            f"💡 *Quick win:* {cat_cta}\n"
             "👉 Reply *\"post deal\"* — post your first deal\n"
             "👉 Reply *\"upgrade\"* — appear first in results\n"
             "\n_Your next weekly report comes Monday!_"
         )
 
+        msg += _shortcut_footer()
         return msg
 
     # ── ⚪ DORMANT (established, zero activity) ─────────────────
@@ -351,20 +435,142 @@ def build_proof_message(
     if benchmark > 0:
         msg += (
             f"\n📊 But similar businesses are getting *{benchmark}* searches!\n"
-            "\nYou're falling behind — let's fix that.\n"
+            "\nCustomers are searching — they're just not finding you.\n"
         )
     else:
         msg += "\n"
 
     if active_deals == 0:
+        msg += f"💡 *Tip:* {cat_cta}\n"
         msg += "👉 Reply *\"post deal\"* to attract customers\n"
 
     if not is_featured:
         msg += "👉 Reply *\"upgrade\"* to appear higher in search\n"
 
     msg += "👉 Reply *\"boost\"* for instant top placement ($4.99)"
+    msg += _shortcut_footer()
 
     return msg
+
+
+# ── Mid-Week Mini Proof ─────────────────────────────────────────
+
+def build_midweek_nudge(
+    business: dict,
+    searches_so_far: int,
+    active_deals: int = 0,
+) -> str | None:
+    """
+    Build a light mid-week nudge (Wednesday).
+    Only sent if business has searches so far this week.
+    Returns None if not worth sending.
+    """
+    if searches_so_far <= 0:
+        return None
+
+    name = business.get("name", "your business")
+    category = business.get("category", "")
+    cat_cta = _get_category_cta(category)
+
+    msg = (
+        f"🔥 *{searches_so_far} people* searched for *{name}* so far this week!\n\n"
+        "Don't miss them — customers are searching *right now*.\n"
+    )
+
+    if active_deals == 0:
+        msg += (
+            f"\n💡 {cat_cta}\n"
+            "👉 Reply *\"post deal\"* to capture this demand 🚀\n"
+        )
+    else:
+        msg += "\n✅ Your deals are live — keep the momentum!\n"
+
+    msg += (
+        "\n🚀 Reply *\"boost\"* for instant top placement ($4.99)"
+    )
+    msg += _shortcut_footer()
+
+    return msg
+
+
+async def send_midweek_nudges(settings: Settings) -> dict:
+    """
+    Send mid-week mini proof messages to business owners with searches.
+    Called by cron on Wednesday at 11am EST.
+    Only sends to businesses that have searches so far this week.
+    """
+    from app.services.whatsapp_service import WhatsAppService
+
+    businesses = get_all_businesses_with_owners(settings)
+    whatsapp = WhatsAppService(settings)
+
+    sent = 0
+    skipped = 0
+    failed = 0
+
+    # Group by owner
+    owner_businesses: dict[str, list[dict]] = {}
+    for biz in businesses:
+        owner_id = biz.get("source_id", "").strip()
+        if not owner_id:
+            skipped += 1
+            continue
+        wa_id = owner_id
+        if wa_id.startswith("user_"):
+            parts = wa_id.split("_")
+            if len(parts) >= 2:
+                wa_id = parts[1]
+        wa_id = wa_id.replace("wa:", "").strip()
+        if not wa_id:
+            skipped += 1
+            continue
+        owner_businesses.setdefault(wa_id, []).append(biz)
+
+    # Only send for current partial week (Mon-Wed = ~3 days)
+    days_into_week = min(datetime.now(timezone.utc).weekday() + 1, 4)
+
+    for wa_id, biz_list in owner_businesses.items():
+        for biz in biz_list:
+            try:
+                searches_so_far = get_inquiry_count(
+                    biz["id"], settings, days=days_into_week
+                )
+
+                if searches_so_far <= 0:
+                    skipped += 1
+                    continue
+
+                active_deals = _get_active_deal_count(biz["id"], settings)
+                message = build_midweek_nudge(biz, searches_so_far, active_deals)
+
+                if not message:
+                    skipped += 1
+                    continue
+
+                await whatsapp.send_text_message(wa_id, message)
+                sent += 1
+                mark_proof_sent(wa_id, settings)
+
+                _track_proof_event("midweek_nudge_sent", wa_id, {
+                    "business_id": biz["id"],
+                    "business_name": biz.get("name", ""),
+                    "searches_so_far": searches_so_far,
+                    "active_deals": active_deals,
+                }, settings)
+
+            except Exception as e:
+                logger.error(f"Failed to send midweek nudge for {biz.get('name')}: {e}")
+                failed += 1
+
+    summary = {
+        "total_businesses": len(businesses),
+        "sent": sent,
+        "skipped": skipped,
+        "failed": failed,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    logger.info(f"Midweek nudge run complete: {summary}")
+    return summary
 
 
 # ── Main Send Functions ─────────────────────────────────────────
@@ -452,6 +658,7 @@ async def send_proof_messages(settings: Settings) -> dict:
                 )
                 await whatsapp.send_text_message(wa_id, message)
                 sent += 1
+                mark_proof_sent(wa_id, settings)
 
                 # Track conversion funnel
                 _track_proof_event("weekly_report_sent", wa_id, {
