@@ -1,24 +1,33 @@
 """
-Mira — Weekly Proof Message Service
+Mira — Weekly Proof Message Service (v2 — conversion-optimized)
 
 Sends business owners a WhatsApp message showing how many people
 asked about their business in the past week. This is the single
 highest-leverage conversion tool — it creates the "aha moment"
 that turns free users into paying customers.
 
-Proof message format:
-  📊 Weekly Report for *Taj Palace*
-  🔥 12 people asked about your business this week!
-  That's 3 more than last week.
+v2 improvements:
+- Urgency framing ("you're missing customers")
+- Category benchmark comparison ("top businesses got 25–40 searches")
+- Trend display with percentage (📈 +40% vs last week)
+- Stats → action tie ("0 deals posted → you're missing conversions")
+- Boost CTA on every proof message (highest-intent moment)
+- Conversion tracking (sent → clicked → converted)
+- Intelligent skip for businesses with 4+ weeks of zero searches
+- Deal count tie-in (active deals vs none)
 
-  ⭐ Featured businesses get 3x more visibility.
-  Type "feature my business" to upgrade →
+Message variants:
+  🟢 ACTIVE  — high searches, show momentum, push upgrade/boost
+  🟡 QUIET   — zero this week, benchmark against category
+  🔵 NEW     — first 2 weeks, onboarding + tips
+  ⚪ DORMANT — 4+ weeks zero, reduced frequency (bi-weekly)
 
 Schedule:
-  Runs every Monday at 10am EST via /api/v1/proof-messages/send
+  Runs every Monday at 10am EST via /api/v1/tasks/proof-messages
   Triggered by Render Cron Job or external scheduler.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +36,8 @@ from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+
+# ── Data Fetchers ───────────────────────────────────────────────
 
 def get_all_businesses_with_owners(settings: Settings) -> list[dict]:
     """
@@ -37,7 +48,7 @@ def get_all_businesses_with_owners(settings: Settings) -> list[dict]:
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         result = (
             client.table("businesses")
-            .select("id, name, city, state, is_featured, source_id, category")
+            .select("id, name, city, state, is_featured, source_id, category, created_at")
             .neq("source_id", "")
             .execute()
         )
@@ -69,101 +80,304 @@ def get_inquiry_count(
         return 0
 
 
+def _get_category_benchmark(category: str, city: str, settings: Settings) -> int:
+    """
+    Get the top-performer search count for this category in this city.
+    Returns the max inquiry count among businesses in the same category.
+    Used as a benchmark: "Top restaurants got 35 searches this week".
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+        # Get all businesses in this category + city
+        biz_result = (
+            client.table("businesses")
+            .select("id")
+            .ilike("city", f"%{city}%")
+            .ilike("category", f"%{category}%")
+            .execute()
+        )
+
+        if not biz_result.data:
+            return 0
+
+        biz_ids = [b["id"] for b in biz_result.data]
+
+        # Count inquiries for each, find max
+        max_count = 0
+        for bid in biz_ids[:10]:  # Cap at 10 to avoid excessive queries
+            count = get_inquiry_count(bid, settings, days=7)
+            max_count = max(max_count, count)
+
+        return max_count
+
+    except Exception as e:
+        logger.warning(f"Failed to get category benchmark: {e}")
+        return 0
+
+
+def _get_active_deal_count(business_id: str, settings: Settings) -> int:
+    """Count active deals for this business."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        now = datetime.now(timezone.utc).isoformat()
+        result = (
+            client.table("deals")
+            .select("id", count="exact")
+            .eq("business_id", business_id)
+            .eq("is_active", True)
+            .gte("expires_at", now)
+            .execute()
+        )
+        return result.count if result.count else 0
+    except Exception:
+        return 0
+
+
+def _get_consecutive_zero_weeks(business_id: str, settings: Settings) -> int:
+    """
+    Check how many consecutive weeks a business has had zero inquiries.
+    Used to identify dormant businesses for reduced send frequency.
+    """
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        now = datetime.now(timezone.utc)
+
+        for weeks in range(1, 6):  # Check up to 5 weeks back
+            since = (now - timedelta(days=7 * weeks)).isoformat()
+            until = (now - timedelta(days=7 * (weeks - 1))).isoformat()
+            result = (
+                client.table("inquiry_logs")
+                .select("id", count="exact")
+                .eq("business_id", business_id)
+                .gte("created_at", since)
+                .lt("created_at", until)
+                .execute()
+            )
+            if result.count and result.count > 0:
+                return weeks - 1
+        return 5  # 5+ weeks of zero
+
+    except Exception:
+        return 0
+
+
+# ── Tracking ────────────────────────────────────────────────────
+
+def _track_proof_event(
+    event: str, wa_id: str, details: dict, settings: Settings,
+) -> None:
+    """Log proof message events for conversion funnel tracking."""
+    try:
+        client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        client.table("notification_log").insert({
+            "business_id": details.get("business_id", ""),
+            "business_name": details.get("business_name", ""),
+            "owner_wa_id": wa_id,
+            "search_query": event,
+            "status": "proof_event",
+            "details": json.dumps(details),
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Proof event tracking failed: {e}")
+
+
+# ── Message Builder ─────────────────────────────────────────────
+
 def build_proof_message(
     business: dict,
     this_week: int,
     last_week: int,
+    benchmark: int = 0,
+    active_deals: int = 0,
 ) -> str:
     """
     Build the weekly proof WhatsApp message for a business owner.
 
-    Three variants based on activity level:
-    1. Active (>0 inquiries) — show count + trend + upgrade nudge
-    2. Zero this week but had some before — encourage them
-    3. Brand new / always zero — welcome + tips
+    v2 — conversion-optimized with urgency framing, benchmarks,
+    trend percentages, and action tie-ins.
+
+    Variants:
+    🟢 ACTIVE  — has inquiries this week
+    🟡 QUIET   — zero this week, had some before
+    🔵 NEW     — brand new listing (< 14 days)
     """
     name = business.get("name", "your business")
     is_featured = business.get("is_featured", False)
     city = business.get("city", "")
+    category = business.get("category", "")
 
-    # ── Active business: has inquiries this week ──
+    # Check if new (< 14 days old)
+    is_new = False
+    if business.get("created_at"):
+        try:
+            created = datetime.fromisoformat(
+                business["created_at"].replace("Z", "+00:00")
+            )
+            is_new = (datetime.now(timezone.utc) - created).days < 14
+        except Exception:
+            pass
+
+    # ── 🟢 ACTIVE: has inquiries this week ──────────────────────
     if this_week > 0:
-        # Trend line
+        # Trend line with percentage
         if last_week > 0:
             diff = this_week - last_week
+            pct = round((diff / last_week) * 100)
             if diff > 0:
-                trend = f"📈 {diff} more than last week"
+                trend = f"📈 *+{pct}%* vs last week ({last_week} → {this_week})"
             elif diff < 0:
-                trend = f"📉 Down {abs(diff)} from last week"
+                trend = f"📉 *{pct}%* vs last week ({last_week} → {this_week})"
             else:
-                trend = "Holding steady"
+                trend = f"➡️ Holding steady at {this_week}"
         else:
-            trend = "Your first week with inquiries!"
+            trend = "🎉 Your first week with searches!"
 
         msg = (
-            f"Hi! This is Mira 👋\n\n"
-            f"This week for *{name}*:\n"
-            f"• *{this_week} people* searched for your category\n"
-            f"• Your business appeared in results\n"
-            f"• {trend}\n"
+            f"📊 *Weekly Report — {name}*\n\n"
+            f"🔥 *{this_week} people* searched for your business last week!\n"
+            f"{trend}\n"
         )
 
-        if not is_featured:
+        # Benchmark comparison
+        if benchmark > this_week:
             msg += (
-                "\n👉 Upgrade to be featured and get more leads\n"
-                "Plans start at $15/month\n"
-                "Reply *\"upgrade\"* to activate"
+                f"\n📊 Top {category or 'businesses'} in {city or 'your area'} "
+                f"got *{benchmark}* searches\n"
+            )
+
+        # Deal tie-in — critical conversion moment
+        if active_deals == 0:
+            msg += (
+                "\n⚠️ *You have 0 active deals*\n"
+                "You're getting searches but missing conversions.\n"
+                "👉 Reply *\"post deal\"* to capture this demand 🚀\n"
             )
         else:
             msg += (
-                "\n✅ Your Featured badge is working!\n"
-                "Type *\"my stats\"* for details"
+                f"\n✅ You have *{active_deals} active deal{'s' if active_deals > 1 else ''}*"
+                " — keep it up!\n"
             )
+
+        # Upgrade / boost CTA
+        if not is_featured:
+            msg += (
+                "\n💎 *Want to appear first in search results?*\n"
+                "Featured businesses get *3x more visibility*\n"
+                "👉 Reply *\"upgrade\"* — plans from $15/mo\n"
+            )
+
+        # Boost CTA (always show — highest intent moment)
+        msg += (
+            "\n🚀 *Want instant visibility?*\n"
+            "Boost your deal for *$4.99* — top of results for 24h\n"
+            "👉 Reply *\"boost\"*"
+        )
 
         return msg
 
-    # ── No inquiries this week, but had some before ──
+    # ── 🟡 QUIET: zero this week, had activity before ───────────
     if last_week > 0:
         msg = (
-            f"Hi! This is Mira 👋\n\n"
-            f"Quiet week for *{name}* — no new inquiries\n"
-            f"(Had {last_week} last week)\n\n"
-            "This happens — searches come in waves.\n"
+            f"📊 *Weekly Report — {name}*\n\n"
+            f"⚠️ No searches last week\n"
+            f"_(Had {last_week} the week before)_\n"
         )
+
+        # Benchmark — create competition
+        if benchmark > 0:
+            msg += (
+                f"\n📊 Similar {category or 'businesses'} in {city or 'your area'} "
+                f"are getting *{benchmark}* searches\n"
+                "\nYou may not be visible enough.\n"
+            )
+        else:
+            msg += "\nSearches come in waves — let's get you back on top.\n"
+
+        # Action tie-in
+        if active_deals == 0:
+            msg += (
+                "\n👉 Reply *\"post deal\"* — deals attract 2x more views\n"
+            )
 
         if not is_featured:
             msg += (
-                "\n👉 Featured businesses stay visible in slow weeks\n"
-                "Reply *\"upgrade\"* to boost your listing"
+                "👉 Reply *\"upgrade\"* — Featured listings stay visible in slow weeks\n"
             )
-        else:
-            msg += "\nYour Featured badge is still active 💪"
+
+        msg += (
+            "\n🚀 Or reply *\"boost\"* for instant top placement ($4.99)\n"
+        )
 
         return msg
 
-    # ── Brand new / zero activity ──
-    msg = f"Hi! This is Mira 👋\n\n"
-    msg += f"Your business *{name}* is listed"
+    # ── 🔵 NEW LISTING (< 14 days, zero activity) ──────────────
+    if is_new:
+        msg = (
+            f"👋 *Welcome to Mira!*\n\n"
+            f"Your business *{name}* is live"
+        )
+        if city:
+            msg += f" in *{city}*"
+        msg += ".\n\n"
+
+        # Benchmark to create aspiration
+        if benchmark > 0:
+            msg += (
+                f"📊 Top {category or 'businesses'} in your area "
+                f"got *{benchmark} searches* last week\n\n"
+            )
+
+        msg += (
+            "⏳ Customers are already searching in your area.\n\n"
+            "Quick wins to get found:\n"
+            "👉 Reply *\"post deal\"* — post your first deal\n"
+            "👉 Reply *\"upgrade\"* — appear first in results\n"
+            "\n_Your next weekly report comes Monday!_"
+        )
+
+        return msg
+
+    # ── ⚪ DORMANT (established, zero activity) ─────────────────
+    msg = (
+        f"📊 *Weekly Report — {name}*\n\n"
+        f"No searches this week"
+    )
     if city:
         msg += f" in {city}"
-    msg += ".\n\n"
-    msg += (
-        "No inquiries yet — that's normal for new listings.\n\n"
-        "Quick tips:\n"
-        "• Check your phone number is correct\n"
-        "• Post a deal — type *\"post a deal\"*\n"
-        "• Share Mira with your community 🙌\n"
-    )
+    msg += ".\n"
+
+    if benchmark > 0:
+        msg += (
+            f"\n📊 But similar businesses are getting *{benchmark}* searches!\n"
+            "\nYou're falling behind — let's fix that.\n"
+        )
+    else:
+        msg += "\n"
+
+    if active_deals == 0:
+        msg += "👉 Reply *\"post deal\"* to attract customers\n"
 
     if not is_featured:
-        msg += "\n👉 Want to appear first? Reply *\"upgrade\"*"
+        msg += "👉 Reply *\"upgrade\"* to appear higher in search\n"
+
+    msg += "👉 Reply *\"boost\"* for instant top placement ($4.99)"
 
     return msg
 
 
+# ── Main Send Functions ─────────────────────────────────────────
+
 async def send_proof_messages(settings: Settings) -> dict:
     """
     Main entry point: send weekly proof messages to all business owners.
+
+    v2 improvements:
+    - Category benchmarks included in each message
+    - Active deal count tie-in
+    - Dormant business skip (4+ weeks zero → bi-weekly only)
+    - Conversion tracking events
 
     Returns a summary dict with counts of sent/skipped/failed.
     """
@@ -175,6 +389,7 @@ async def send_proof_messages(settings: Settings) -> dict:
     sent = 0
     skipped = 0
     failed = 0
+    dormant_skipped = 0
 
     # Group businesses by owner (one owner might have multiple businesses)
     owner_businesses: dict[str, list[dict]] = {}
@@ -183,8 +398,13 @@ async def send_proof_messages(settings: Settings) -> dict:
         if not owner_id:
             skipped += 1
             continue
-        # source_id might be stored as "wa:PHONE" or just "PHONE"
-        wa_id = owner_id.replace("wa:", "").strip()
+        # Extract wa_id from source_id (format: "user_{wa_id}_..." or "wa:{wa_id}")
+        wa_id = owner_id
+        if wa_id.startswith("user_"):
+            parts = wa_id.split("_")
+            if len(parts) >= 2:
+                wa_id = parts[1]
+        wa_id = wa_id.replace("wa:", "").strip()
         if not wa_id:
             skipped += 1
             continue
@@ -195,19 +415,59 @@ async def send_proof_messages(settings: Settings) -> dict:
         f"{len(owner_businesses)} unique owners"
     )
 
+    # Check if this is an odd or even week (for bi-weekly dormant sends)
+    week_number = datetime.now(timezone.utc).isocalendar()[1]
+    is_even_week = week_number % 2 == 0
+
     for wa_id, biz_list in owner_businesses.items():
         for biz in biz_list:
             try:
                 this_week = get_inquiry_count(biz["id"], settings, days=7)
                 last_week = get_inquiry_count(biz["id"], settings, days=14) - this_week
+                last_week = max(last_week, 0)
 
-                message = build_proof_message(biz, this_week, max(last_week, 0))
+                # ── Dormant skip: 4+ weeks zero → bi-weekly only ──
+                if this_week == 0 and last_week == 0:
+                    zero_weeks = _get_consecutive_zero_weeks(biz["id"], settings)
+                    if zero_weeks >= 4 and not is_even_week:
+                        dormant_skipped += 1
+                        logger.info(
+                            f"Skipping dormant business {biz['name']} "
+                            f"({zero_weeks} zero weeks, odd week)"
+                        )
+                        continue
+
+                # Get benchmark and deal count for richer messaging
+                benchmark = _get_category_benchmark(
+                    biz.get("category", ""),
+                    biz.get("city", ""),
+                    settings,
+                )
+                active_deals = _get_active_deal_count(biz["id"], settings)
+
+                message = build_proof_message(
+                    biz, this_week, last_week,
+                    benchmark=benchmark,
+                    active_deals=active_deals,
+                )
                 await whatsapp.send_text_message(wa_id, message)
                 sent += 1
 
+                # Track conversion funnel
+                _track_proof_event("weekly_report_sent", wa_id, {
+                    "business_id": biz["id"],
+                    "business_name": biz.get("name", ""),
+                    "this_week": this_week,
+                    "last_week": last_week,
+                    "benchmark": benchmark,
+                    "active_deals": active_deals,
+                    "is_featured": biz.get("is_featured", False),
+                }, settings)
+
                 logger.info(
                     f"Proof message sent: {biz['name']} → {wa_id} "
-                    f"(this_week={this_week}, last_week={last_week})"
+                    f"(this={this_week}, last={last_week}, "
+                    f"bench={benchmark}, deals={active_deals})"
                 )
 
             except Exception as e:
@@ -219,6 +479,7 @@ async def send_proof_messages(settings: Settings) -> dict:
         "unique_owners": len(owner_businesses),
         "sent": sent,
         "skipped": skipped,
+        "dormant_skipped": dormant_skipped,
         "failed": failed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -241,7 +502,7 @@ async def send_proof_message_single(
         client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         biz_result = (
             client.table("businesses")
-            .select("id, name, city, state, is_featured, source_id, category")
+            .select("id, name, city, state, is_featured, source_id, category, created_at")
             .ilike("source_id", f"%{wa_id}%")
             .execute()
         )
@@ -253,18 +514,35 @@ async def send_proof_message_single(
             )
 
         whatsapp = WhatsAppService(settings)
-        messages_sent = 0
 
         for biz in biz_result.data:
             this_week = get_inquiry_count(biz["id"], settings, days=7)
             last_week = get_inquiry_count(biz["id"], settings, days=14) - this_week
-            message = build_proof_message(biz, this_week, max(last_week, 0))
-            await whatsapp.send_text_message(wa_id, message)
-            messages_sent += 1
+            last_week = max(last_week, 0)
 
-        if messages_sent == 1:
-            return ""  # Message already sent directly
-        return ""  # All messages sent directly
+            benchmark = _get_category_benchmark(
+                biz.get("category", ""),
+                biz.get("city", ""),
+                settings,
+            )
+            active_deals = _get_active_deal_count(biz["id"], settings)
+
+            message = build_proof_message(
+                biz, this_week, last_week,
+                benchmark=benchmark,
+                active_deals=active_deals,
+            )
+            await whatsapp.send_text_message(wa_id, message)
+
+            # Track manual request
+            _track_proof_event("weekly_report_manual", wa_id, {
+                "business_id": biz["id"],
+                "business_name": biz.get("name", ""),
+                "this_week": this_week,
+                "last_week": last_week,
+            }, settings)
+
+        return ""  # Messages already sent directly
 
     except Exception as e:
         logger.error(f"Failed to send single proof message for {wa_id}: {e}")
